@@ -1,10 +1,11 @@
-# [Project name]
+# Double — Lease Capitalization
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A month-end close lease capitalization app for finance teams. Manages ASC 842 / IFRS 16 operating leases with auto-generated amortization schedules, live payment tracking, and posting workflows.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server (port 8080)
+- `pnpm --filter @workspace/lease-app run dev` — run the frontend (port 20888, preview at `/`)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
@@ -14,6 +15,7 @@ _Replace the heading above with the project's name, and this line with one sente
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
+- Frontend: React + Vite, Tailwind CSS, shadcn/ui, TanStack Query, Wouter
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM
 - Validation: Zod (`zod/v4`), `drizzle-zod`
@@ -22,15 +24,29 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- DB schema: `lib/db/src/schema/leases.ts`
+- API contract: `lib/api-spec/openapi.yaml`
+- Generated hooks: `lib/api-client-react/src/generated/api.ts`
+- Generated Zod schemas: `lib/api-zod/src/generated/api.ts`
+- API routes: `artifacts/api-server/src/routes/leases.ts`
+- Amortization logic: `artifacts/api-server/src/lib/amortization.ts`
+- Frontend pages: `artifacts/lease-app/src/pages/`
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Amortization schedule is generated server-side on lease creation and stored in `schedule_entries` table. Draft entries can be posted period-by-period.
+- Client-side schedule preview in the Add Lease modal is computed in-browser for instant feedback (same formula as server).
+- Numeric DB columns use `numeric(15,2)` precision; converted to JS numbers in route handlers before sending to client.
+- `borrowingRate` is stored as annual percentage (e.g. `5.5` for 5.5%). Monthly rate is derived as `rate / 100 / 12`.
+- Summary stats (active count, YTD interest, outstanding liability) are computed at query time, not cached.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Leases list with summary stat cards (active count, YTD interest, outstanding lease liability)
+- Add/edit lease modal with live amortization schedule preview before saving
+- Lease detail page with full schedule, draft/posted status per period
+- Post payments through a selected period (marks draft → posted)
+- Delete lease action
 
 ## User preferences
 
@@ -38,7 +54,10 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- After spec changes, always run `pnpm --filter @workspace/api-spec run codegen` before using types
+- `pnpm --filter @workspace/db run push` to apply schema changes to dev DB
+- Numeric fields from Drizzle are returned as strings; use `parseFloat()` in route handlers
+- The `schedule_entries` table cascades delete on lease removal
 
 ## Pointers
 

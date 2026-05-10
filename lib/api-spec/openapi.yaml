@@ -1,15 +1,16 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Double Lease Capitalization API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: leases
+    description: Lease capitalization operations
 paths:
   /healthz:
     get:
@@ -24,6 +25,191 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /leases:
+    get:
+      operationId: listLeases
+      tags: [leases]
+      summary: List all leases
+      responses:
+        "200":
+          description: List of leases
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Lease"
+    post:
+      operationId: createLease
+      tags: [leases]
+      summary: Create a new lease
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseInput"
+      responses:
+        "201":
+          description: Created lease
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lease"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /leases/summary:
+    get:
+      operationId: getLeasesSummary
+      tags: [leases]
+      summary: Get aggregate summary stats for all leases
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeasesSummary"
+
+  /leases/{id}:
+    get:
+      operationId: getLease
+      tags: [leases]
+      summary: Get a lease with its full amortization schedule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lease with schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseWithSchedule"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      operationId: updateLease
+      tags: [leases]
+      summary: Update a lease
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeaseUpdate"
+      responses:
+        "200":
+          description: Updated lease
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lease"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteLease
+      tags: [leases]
+      summary: Delete a lease
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /leases/{id}/schedule:
+    get:
+      operationId: getLeaseSchedule
+      tags: [leases]
+      summary: Get amortization schedule entries for a lease
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Schedule entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScheduleEntry"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /leases/{id}/schedule/post:
+    post:
+      operationId: postLeasePayments
+      tags: [leases]
+      summary: Post (approve) payments for a lease through a given period
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostPaymentsInput"
+      responses:
+        "200":
+          description: Updated schedule entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScheduleEntry"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +220,282 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    Lease:
+      type: object
+      required:
+        - id
+        - name
+        - lessor
+        - commencementDate
+        - termMonths
+        - monthlyPayment
+        - presentValue
+        - borrowingRate
+        - status
+        - createdAt
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        lessor:
+          type: string
+        commencementDate:
+          type: string
+          format: date
+        termMonths:
+          type: integer
+        monthlyPayment:
+          type: number
+        presentValue:
+          type: number
+        borrowingRate:
+          type: number
+          description: Annual incremental borrowing rate as percentage (e.g. 6 for 6%)
+        rouAssetAccount:
+          type: ["string", "null"]
+        leaseLiabilityAccount:
+          type: ["string", "null"]
+        interestExpenseAccount:
+          type: ["string", "null"]
+        amortizationExpenseAccount:
+          type: ["string", "null"]
+        cashAccount:
+          type: ["string", "null"]
+        paymentFrequency:
+          type: string
+          enum: [monthly, quarterly, annually]
+        status:
+          type: string
+          enum: [draft, active, expired]
+        currentBalance:
+          type: ["number", "null"]
+        nextPayment:
+          type: ["number", "null"]
+        nextPaymentDate:
+          type: ["string", "null"]
+          format: date
+        createdAt:
+          type: string
+          format: date-time
+
+    LeaseInput:
+      type: object
+      required:
+        - name
+        - lessor
+        - commencementDate
+        - termMonths
+        - monthlyPayment
+        - presentValue
+        - borrowingRate
+      properties:
+        name:
+          type: string
+          minLength: 1
+        lessor:
+          type: string
+          minLength: 1
+        commencementDate:
+          type: string
+          format: date
+        termMonths:
+          type: integer
+          minimum: 1
+        monthlyPayment:
+          type: number
+          minimum: 0
+        presentValue:
+          type: number
+          minimum: 0
+        borrowingRate:
+          type: number
+          minimum: 0
+        rouAssetAccount:
+          type: string
+        leaseLiabilityAccount:
+          type: string
+        interestExpenseAccount:
+          type: string
+        amortizationExpenseAccount:
+          type: string
+        cashAccount:
+          type: string
+        paymentFrequency:
+          type: string
+          enum: [monthly, quarterly, annually]
+
+    LeaseUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        lessor:
+          type: string
+        commencementDate:
+          type: string
+          format: date
+        termMonths:
+          type: integer
+          minimum: 1
+        monthlyPayment:
+          type: number
+          minimum: 0
+        presentValue:
+          type: number
+          minimum: 0
+        borrowingRate:
+          type: number
+          minimum: 0
+        rouAssetAccount:
+          type: string
+        leaseLiabilityAccount:
+          type: string
+        interestExpenseAccount:
+          type: string
+        amortizationExpenseAccount:
+          type: string
+        cashAccount:
+          type: string
+        paymentFrequency:
+          type: string
+          enum: [monthly, quarterly, annually]
+        status:
+          type: string
+          enum: [draft, active, expired]
+
+    LeaseWithSchedule:
+      type: object
+      required:
+        - id
+        - name
+        - lessor
+        - commencementDate
+        - termMonths
+        - monthlyPayment
+        - presentValue
+        - borrowingRate
+        - status
+        - createdAt
+        - schedule
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        lessor:
+          type: string
+        commencementDate:
+          type: string
+          format: date
+        termMonths:
+          type: integer
+        monthlyPayment:
+          type: number
+        presentValue:
+          type: number
+        borrowingRate:
+          type: number
+        rouAssetAccount:
+          type: ["string", "null"]
+        leaseLiabilityAccount:
+          type: ["string", "null"]
+        interestExpenseAccount:
+          type: ["string", "null"]
+        amortizationExpenseAccount:
+          type: ["string", "null"]
+        cashAccount:
+          type: ["string", "null"]
+        paymentFrequency:
+          type: string
+          enum: [monthly, quarterly, annually]
+        status:
+          type: string
+          enum: [draft, active, expired]
+        currentBalance:
+          type: ["number", "null"]
+        nextPayment:
+          type: ["number", "null"]
+        nextPaymentDate:
+          type: ["string", "null"]
+          format: date
+        createdAt:
+          type: string
+          format: date-time
+        schedule:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScheduleEntry"
+
+    ScheduleEntry:
+      type: object
+      required:
+        - id
+        - leaseId
+        - periodNumber
+        - paymentDate
+        - beginningBalance
+        - payment
+        - interest
+        - principal
+        - endingBalance
+        - rouAmortization
+        - status
+      properties:
+        id:
+          type: integer
+        leaseId:
+          type: integer
+        periodNumber:
+          type: integer
+        paymentDate:
+          type: string
+          format: date
+        beginningBalance:
+          type: number
+        payment:
+          type: number
+        interest:
+          type: number
+        principal:
+          type: number
+        endingBalance:
+          type: number
+        rouAmortization:
+          type: number
+        status:
+          type: string
+          enum: [draft, posted]
+
+    PostPaymentsInput:
+      type: object
+      required:
+        - throughPeriod
+      properties:
+        throughPeriod:
+          type: integer
+          minimum: 1
+          description: Post all draft payments up through this period number
+
+    LeasesSummary:
+      type: object
+      required:
+        - activeLeases
+        - interestExpenseYtd
+        - outstandingLeaseLiability
+      properties:
+        activeLeases:
+          type: integer
+        interestExpenseYtd:
+          type: number
+        outstandingLeaseLiability:
+          type: number

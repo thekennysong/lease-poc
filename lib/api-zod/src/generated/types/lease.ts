@@ -5,6 +5,7 @@
  * Double Lease Capitalization API
  * OpenAPI spec version: 0.1.0
  */
+import type { LeaseLeaseClassification } from "./leaseLeaseClassification";
 import type { LeasePaymentFrequency } from "./leasePaymentFrequency";
 import type { LeaseStatus } from "./leaseStatus";
 
@@ -18,6 +19,8 @@ export interface Lease {
   presentValue: number;
   /** Annual incremental borrowing rate as percentage (e.g. 6 for 6%) */
   borrowingRate: number;
+  /** ASC 842 lease classification */
+  leaseClassification: LeaseLeaseClassification;
   /** @nullable */
   rouAssetAccount?: string | null;
   /** @nullable */

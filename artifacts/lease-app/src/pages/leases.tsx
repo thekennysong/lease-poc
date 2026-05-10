@@ -67,7 +67,7 @@ export default function LeasesPage() {
         setLeaseToDelete(null);
       },
       onError: (err) => {
-        toast({ title: "Failed to delete", description: err.error, variant: "destructive" });
+        toast({ title: "Failed to delete", description: err.data?.error, variant: "destructive" });
       }
     });
   };

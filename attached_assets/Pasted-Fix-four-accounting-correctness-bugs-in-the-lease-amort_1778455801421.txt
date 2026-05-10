@@ -1,0 +1,55 @@
+Fix four accounting/correctness bugs in the lease amortization logic. Do not 
+add features, just fix what's broken.
+
+1. Bug in PUT /leases/:id handler in artifacts/api-server/src/routes/leases.ts 
+around line 302. generateSchedule is being called with lease.monthlyPayment as 
+the first argument, but the first argument should be presentValue. Fix it to 
+pass lease.presentValue (parsed via toNumber). This is causing schedules to 
+regenerate with completely wrong numbers any time financial fields are edited.
+
+2. ROU amortization is wrong for operating leases. In 
+artifacts/api-server/src/lib/amortization.ts, rouAmortizationPerPeriod is 
+currently presentValue / termMonths, which is finance-lease treatment (straight 
+line on the ROU asset). For ASC 842 operating leases, the rule is:
+   - Total lease expense is straight-line: sum of all undiscounted payments / 
+     termMonths, recognized as a single line each period
+   - Interest accretion on the liability is calculated normally (current code 
+     is correct for this part)
+   - ROU amortization for the period = straight-line lease expense - interest 
+     for the period
+   This makes ROU amort small early and large late, while total P&L expense 
+   stays flat.
+
+   Add a leaseClassification field ("operating" | "finance") to the 
+   ScheduleRow type, lease DB schema (default "operating"), insertLeaseSchema, 
+   and the API spec. Then make generateSchedule branch on classification:
+   - finance: keep current behavior (straight-line ROU)
+   - operating: use the formula above
+
+   Update the AddLeaseModal form to include a classification dropdown 
+   (default operating) and pass it through.
+
+3. paymentFrequency is stored but ignored. generateSchedule always runs 
+monthly. Make it respect the frequency:
+   - Number of periods = termMonths / paymentsPerYear (where 
+     paymentsPerYear = 12 for monthly, 4 for quarterly, 1 for annually). Throw 
+     if termMonths isn't divisible.
+   - Periodic rate = annualBorrowingRate / 100 / paymentsPerYear
+   - Date increment per period = 12 / paymentsPerYear months
+   Pass paymentFrequency into generateSchedule and update the route handlers 
+   accordingly. Also update the in-browser preview in AddLeaseModal.tsx to use 
+   the same logic so client and server agree.
+
+4. Compute PV from inputs instead of treating it as user-entered. Add a 
+"Compute PV" button next to the presentValue field in AddLeaseModal. When 
+clicked, calculate PV of the payment annuity using the borrowing rate, payment 
+amount, term, and frequency, and fill the field. Keep the field editable so 
+users can override. When the user-entered PV drifts from the computed PV by 
+more than $1, show a small warning under the field.
+
+After making changes:
+- Run pnpm run typecheck across all packages
+- Run pnpm --filter @workspace/api-spec run codegen if the API spec changed
+- Run pnpm --filter @workspace/db run push to apply schema changes
+- Update replit.md "Architecture decisions" section with the operating vs 
+  finance distinction

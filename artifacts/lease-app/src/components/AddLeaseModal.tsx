@@ -5,7 +5,7 @@ import * as z from "zod";
 import { format } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCreateLease, getListLeasesQueryKey, getGetLeasesSummaryQueryKey } from "@workspace/api-client-react";
-import { CalendarIcon } from "lucide-react";
+import { CalendarIcon, Calculator, AlertTriangle } from "lucide-react";
 
 import {
   Dialog,
@@ -34,6 +34,28 @@ import { useToast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, round2 } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
+type PaymentFrequency = "monthly" | "quarterly" | "annually";
+type LeaseClassification = "operating" | "finance";
+
+function paymentsPerYear(freq: PaymentFrequency): number {
+  if (freq === "monthly") return 12;
+  if (freq === "quarterly") return 4;
+  return 1;
+}
+
+function monthsPerPeriod(freq: PaymentFrequency): number {
+  return 12 / paymentsPerYear(freq);
+}
+
+/** Present value of an ordinary annuity */
+function computePV(periodicPayment: number, annualRate: number, termMonths: number, freq: PaymentFrequency): number {
+  const ppy = paymentsPerYear(freq);
+  const r = annualRate / 100 / ppy;
+  const n = termMonths / monthsPerPeriod(freq);
+  if (r === 0) return round2(periodicPayment * n);
+  return round2(periodicPayment * (1 - Math.pow(1 + r, -n)) / r);
+}
+
 const formSchema = z.object({
   name: z.string().min(1, "Name is required"),
   lessor: z.string().min(1, "Lessor is required"),
@@ -42,6 +64,7 @@ const formSchema = z.object({
   monthlyPayment: z.coerce.number().min(0),
   presentValue: z.coerce.number().min(0),
   borrowingRate: z.coerce.number().min(0),
+  leaseClassification: z.enum(["operating", "finance"]).default("operating"),
   rouAssetAccount: z.string().optional(),
   leaseLiabilityAccount: z.string().optional(),
   interestExpenseAccount: z.string().optional(),
@@ -72,6 +95,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
       monthlyPayment: 0,
       presentValue: 0,
       borrowingRate: 0,
+      leaseClassification: "operating",
       rouAssetAccount: "",
       leaseLiabilityAccount: "",
       interestExpenseAccount: "",
@@ -83,28 +107,60 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
 
   const watchValues = form.watch();
 
-  const previewSchedule = useMemo(() => {
-    const { termMonths, presentValue, monthlyPayment, borrowingRate, commencementDate } = watchValues;
-    if (!termMonths || !presentValue || !monthlyPayment || borrowingRate == null || !commencementDate) {
-      return [];
+  // Whether termMonths is divisible by the period length for the chosen frequency
+  const termValid = useMemo(() => {
+    const mpp = monthsPerPeriod(watchValues.paymentFrequency);
+    return watchValues.termMonths > 0 && watchValues.termMonths % mpp === 0;
+  }, [watchValues.termMonths, watchValues.paymentFrequency]);
+
+  // Computed PV from the annuity formula
+  const computedPV = useMemo(() => {
+    const { monthlyPayment, borrowingRate, termMonths, paymentFrequency } = watchValues;
+    if (!monthlyPayment || borrowingRate == null || !termMonths) return null;
+    if (!termValid) return null;
+    return computePV(monthlyPayment, borrowingRate, termMonths, paymentFrequency);
+  }, [watchValues.monthlyPayment, watchValues.borrowingRate, watchValues.termMonths, watchValues.paymentFrequency, termValid]);
+
+  const pvDrift = computedPV !== null && watchValues.presentValue > 0
+    ? Math.abs(watchValues.presentValue - computedPV) > 1
+    : false;
+
+  function handleComputePV() {
+    if (computedPV !== null) {
+      form.setValue("presentValue", computedPV);
     }
+  }
+
+  // Live schedule preview — mirrors the server logic exactly
+  const previewSchedule = useMemo(() => {
+    const { termMonths, presentValue, monthlyPayment, borrowingRate, commencementDate, paymentFrequency, leaseClassification } = watchValues;
+    if (!termMonths || !presentValue || !monthlyPayment || borrowingRate == null || !commencementDate) return [];
+    if (!termValid) return [];
+
+    const ppy = paymentsPerYear(paymentFrequency);
+    const mpp = monthsPerPeriod(paymentFrequency);
+    const numPeriods = termMonths / mpp;
+    const periodicRate = borrowingRate / 100 / ppy;
+
+    const totalUndiscounted = monthlyPayment * numPeriods;
+    const straightLineExpense = round2(totalUndiscounted / numPeriods);
+    const financeRouPerPeriod = round2(presentValue / numPeriods);
 
     const schedule = [];
-    const monthlyRate = borrowingRate / 100 / 12;
     let balance = presentValue;
 
-    for (let i = 1; i <= termMonths; i++) {
-      const interest = round2(balance * monthlyRate);
+    for (let i = 1; i <= numPeriods; i++) {
+      const interest = round2(balance * periodicRate);
       const principal = round2(monthlyPayment - interest);
       let endingBalance = round2(balance - principal);
-      
-      if (i === termMonths && endingBalance < 1 && endingBalance > -1) {
-         endingBalance = 0;
-      }
-      if (endingBalance < 0) endingBalance = 0;
+      if (i === numPeriods) endingBalance = 0;
+
+      const rouAmortization = leaseClassification === "operating"
+        ? round2(straightLineExpense - interest)
+        : financeRouPerPeriod;
 
       const pDate = new Date(commencementDate);
-      pDate.setMonth(pDate.getMonth() + i);
+      pDate.setMonth(pDate.getMonth() + i * mpp);
 
       schedule.push({
         period: i,
@@ -114,12 +170,22 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
         interest,
         principal,
         endingBalance,
+        rouAmortization,
       });
 
       balance = endingBalance;
     }
     return schedule;
-  }, [watchValues.termMonths, watchValues.presentValue, watchValues.monthlyPayment, watchValues.borrowingRate, watchValues.commencementDate]);
+  }, [
+    watchValues.termMonths,
+    watchValues.presentValue,
+    watchValues.monthlyPayment,
+    watchValues.borrowingRate,
+    watchValues.commencementDate,
+    watchValues.paymentFrequency,
+    watchValues.leaseClassification,
+    termValid,
+  ]);
 
   function onSubmit(values: FormValues) {
     createLease.mutate(
@@ -140,7 +206,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
         onError: (err) => {
           toast({
             title: "Error creating lease",
-            description: err.error || "An unknown error occurred",
+            description: err.data?.error || "An unknown error occurred",
             variant: "destructive",
           });
         },
@@ -163,6 +229,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
             <Form {...form}>
               <form id="add-lease-form" onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
                 <div className="grid grid-cols-2 gap-6">
+                  {/* Left column */}
                   <div className="space-y-6">
                     <div className="flex flex-col gap-4">
                       <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">General Info</h3>
@@ -192,6 +259,51 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                           </FormItem>
                         )}
                       />
+                      <div className="grid grid-cols-2 gap-4">
+                        <FormField
+                          control={form.control}
+                          name="leaseClassification"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Classification</FormLabel>
+                              <Select onValueChange={field.onChange} value={field.value}>
+                                <FormControl>
+                                  <SelectTrigger data-testid="input-classification">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="operating">Operating</SelectItem>
+                                  <SelectItem value="finance">Finance</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name="paymentFrequency"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Payment Frequency</FormLabel>
+                              <Select onValueChange={field.onChange} value={field.value}>
+                                <FormControl>
+                                  <SelectTrigger data-testid="input-frequency">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="monthly">Monthly</SelectItem>
+                                  <SelectItem value="quarterly">Quarterly</SelectItem>
+                                  <SelectItem value="annually">Annually</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
                     </div>
 
                     <div className="flex flex-col gap-4">
@@ -214,22 +326,13 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                                       )}
                                       data-testid="input-date"
                                     >
-                                      {field.value ? (
-                                        format(field.value, "PPP")
-                                      ) : (
-                                        <span>Pick a date</span>
-                                      )}
+                                      {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
                                       <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
                                     </Button>
                                   </FormControl>
                                 </PopoverTrigger>
                                 <PopoverContent className="w-auto p-0" align="start">
-                                  <Calendar
-                                    mode="single"
-                                    selected={field.value}
-                                    onSelect={field.onChange}
-                                    initialFocus
-                                  />
+                                  <Calendar mode="single" selected={field.value} onSelect={field.onChange} initialFocus />
                                 </PopoverContent>
                               </Popover>
                               <FormMessage />
@@ -245,22 +348,11 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                               <FormControl>
                                 <Input type="number" data-testid="input-term" {...field} />
                               </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        <FormField
-                          control={form.control}
-                          name="presentValue"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Present Value / ROU Asset</FormLabel>
-                              <FormControl>
-                                <div className="relative">
-                                  <span className="absolute left-3 top-2.5 text-muted-foreground">$</span>
-                                  <Input type="number" className="pl-7" data-testid="input-pv" {...field} />
-                                </div>
-                              </FormControl>
+                              {!termValid && watchValues.termMonths > 0 && (
+                                <p className="text-xs text-destructive">
+                                  Term must be divisible by {monthsPerPeriod(watchValues.paymentFrequency)} for {watchValues.paymentFrequency} frequency
+                                </p>
+                              )}
                               <FormMessage />
                             </FormItem>
                           )}
@@ -270,7 +362,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                           name="monthlyPayment"
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Monthly Payment</FormLabel>
+                              <FormLabel>Periodic Payment</FormLabel>
                               <FormControl>
                                 <div className="relative">
                                   <span className="absolute left-3 top-2.5 text-muted-foreground">$</span>
@@ -286,7 +378,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                           name="borrowingRate"
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Borrowing Rate</FormLabel>
+                              <FormLabel>Borrowing Rate (Annual)</FormLabel>
                               <FormControl>
                                 <div className="relative">
                                   <Input type="number" step="0.01" className="pr-8" data-testid="input-rate" {...field} />
@@ -299,22 +391,38 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                         />
                         <FormField
                           control={form.control}
-                          name="paymentFrequency"
+                          name="presentValue"
                           render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Payment Frequency</FormLabel>
-                              <Select onValueChange={field.onChange} defaultValue={field.value}>
+                            <FormItem className="col-span-2">
+                              <FormLabel>Present Value / ROU Asset</FormLabel>
+                              <div className="flex gap-2">
                                 <FormControl>
-                                  <SelectTrigger data-testid="input-frequency">
-                                    <SelectValue placeholder="Select a frequency" />
-                                  </SelectTrigger>
+                                  <div className="relative flex-1">
+                                    <span className="absolute left-3 top-2.5 text-muted-foreground">$</span>
+                                    <Input type="number" className="pl-7" data-testid="input-pv" {...field} />
+                                  </div>
                                 </FormControl>
-                                <SelectContent>
-                                  <SelectItem value="monthly">Monthly</SelectItem>
-                                  <SelectItem value="quarterly">Quarterly</SelectItem>
-                                  <SelectItem value="annually">Annually</SelectItem>
-                                </SelectContent>
-                              </Select>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={handleComputePV}
+                                  disabled={computedPV === null}
+                                  data-testid="button-compute-pv"
+                                  className="shrink-0 gap-1.5"
+                                >
+                                  <Calculator className="h-3.5 w-3.5" />
+                                  Compute PV
+                                </Button>
+                              </div>
+                              {pvDrift && (
+                                <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 mt-1" data-testid="warning-pv-drift">
+                                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                                  <span>
+                                    Entered PV differs from computed PV ({formatCurrency(computedPV!)}) by more than $1.
+                                  </span>
+                                </div>
+                              )}
                               <FormMessage />
                             </FormItem>
                           )}
@@ -323,6 +431,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                     </div>
                   </div>
 
+                  {/* Right column — GL accounts */}
                   <div className="space-y-6">
                     <div className="flex flex-col gap-4">
                       <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">GL Accounts</h3>
@@ -399,17 +508,20 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
 
                 {previewSchedule.length > 0 && (
                   <div className="mt-8 border-t pt-6">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">Schedule Preview</h3>
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+                      Schedule Preview
+                    </h3>
                     <div className="border rounded-md">
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead className="w-16">#</TableHead>
+                            <TableHead className="w-12">#</TableHead>
                             <TableHead>Payment Date</TableHead>
                             <TableHead className="text-right">Beg. Balance</TableHead>
                             <TableHead className="text-right">Payment</TableHead>
                             <TableHead className="text-right">Interest</TableHead>
                             <TableHead className="text-right">Principal</TableHead>
+                            <TableHead className="text-right">ROU Amort.</TableHead>
                             <TableHead className="text-right">End. Balance</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -422,12 +534,13 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                               <TableCell className="text-right font-mono text-sm">{formatCurrency(row.payment)}</TableCell>
                               <TableCell className="text-right font-mono text-sm">{formatCurrency(row.interest)}</TableCell>
                               <TableCell className="text-right font-mono text-sm">{formatCurrency(row.principal)}</TableCell>
+                              <TableCell className="text-right font-mono text-sm">{formatCurrency(row.rouAmortization)}</TableCell>
                               <TableCell className="text-right font-mono text-sm">{formatCurrency(row.endingBalance)}</TableCell>
                             </TableRow>
                           ))}
                           {previewSchedule.length > 12 && (
                             <TableRow>
-                              <TableCell colSpan={7} className="text-center text-muted-foreground text-sm italic">
+                              <TableCell colSpan={8} className="text-center text-muted-foreground text-sm italic py-3">
                                 ... and {previewSchedule.length - 12} more periods
                               </TableCell>
                             </TableRow>

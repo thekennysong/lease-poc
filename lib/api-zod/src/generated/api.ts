@@ -31,6 +31,9 @@ export const ListLeasesResponseItem = zod.object({
     .describe(
       "Annual incremental borrowing rate as percentage (e.g. 6 for 6%)",
     ),
+  leaseClassification: zod
+    .enum(["operating", "finance"])
+    .describe("ASC 842 lease classification"),
   rouAssetAccount: zod.string().nullish(),
   leaseLiabilityAccount: zod.string().nullish(),
   interestExpenseAccount: zod.string().nullish(),
@@ -63,6 +66,7 @@ export const CreateLeaseBody = zod.object({
   monthlyPayment: zod.number().min(createLeaseBodyMonthlyPaymentMin),
   presentValue: zod.number().min(createLeaseBodyPresentValueMin),
   borrowingRate: zod.number().min(createLeaseBodyBorrowingRateMin),
+  leaseClassification: zod.enum(["operating", "finance"]).optional(),
   rouAssetAccount: zod.string().optional(),
   leaseLiabilityAccount: zod.string().optional(),
   interestExpenseAccount: zod.string().optional(),
@@ -96,6 +100,7 @@ export const GetLeaseResponse = zod.object({
   monthlyPayment: zod.number(),
   presentValue: zod.number(),
   borrowingRate: zod.number(),
+  leaseClassification: zod.enum(["operating", "finance"]),
   rouAssetAccount: zod.string().nullish(),
   leaseLiabilityAccount: zod.string().nullish(),
   interestExpenseAccount: zod.string().nullish(),
@@ -145,6 +150,7 @@ export const UpdateLeaseBody = zod.object({
   monthlyPayment: zod.number().min(updateLeaseBodyMonthlyPaymentMin).optional(),
   presentValue: zod.number().min(updateLeaseBodyPresentValueMin).optional(),
   borrowingRate: zod.number().min(updateLeaseBodyBorrowingRateMin).optional(),
+  leaseClassification: zod.enum(["operating", "finance"]).optional(),
   rouAssetAccount: zod.string().optional(),
   leaseLiabilityAccount: zod.string().optional(),
   interestExpenseAccount: zod.string().optional(),
@@ -167,6 +173,9 @@ export const UpdateLeaseResponse = zod.object({
     .describe(
       "Annual incremental borrowing rate as percentage (e.g. 6 for 6%)",
     ),
+  leaseClassification: zod
+    .enum(["operating", "finance"])
+    .describe("ASC 842 lease classification"),
   rouAssetAccount: zod.string().nullish(),
   leaseLiabilityAccount: zod.string().nullish(),
   interestExpenseAccount: zod.string().nullish(),

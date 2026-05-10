@@ -66,7 +66,7 @@ export default function LeaseDetailPage() {
         setThroughPeriod("");
       },
       onError: (err) => {
-        toast({ title: "Error posting payments", description: err.error, variant: "destructive" });
+        toast({ title: "Error posting payments", description: err.data?.error, variant: "destructive" });
       }
     });
   };
@@ -153,6 +153,10 @@ export default function LeaseDetailPage() {
               <div className="space-y-1">
                 <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Borrowing Rate</span>
                 <p className="font-medium font-mono">{formatPercent(lease.borrowingRate)}</p>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Classification</span>
+                <p className="font-medium capitalize">{lease.leaseClassification}</p>
               </div>
             </div>
             

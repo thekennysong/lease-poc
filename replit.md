@@ -39,6 +39,12 @@ A month-end close lease capitalization app for finance teams. Manages ASC 842 / 
 - Numeric DB columns use `numeric(15,2)` precision; converted to JS numbers in route handlers before sending to client.
 - `borrowingRate` is stored as annual percentage (e.g. `5.5` for 5.5%). Monthly rate is derived as `rate / 100 / 12`.
 - Summary stats (active count, YTD interest, outstanding liability) are computed at query time, not cached.
+- `leaseClassification` is `"operating"` (default) or `"finance"`. Affects ROU amortization column in the schedule:
+  - **Operating (ASC 842):** ROU amortization = straight-line total expense minus interest for each period. Total expense is constant; interest front-loads, so ROU amortization back-loads.
+  - **Finance (ASC 842 / IFRS 16):** ROU amortization = PV / number of periods (straight-line depreciation of the asset independent of interest).
+- `paymentFrequency` is `"monthly"` (default), `"quarterly"`, or `"annually"`. Affects period count, periodic rate, and date increments. The `monthlyPayment` field stores the per-period payment regardless of frequency name.
+- Orval generates `z.coerce.date()` for OpenAPI `format: date` fields. Route handlers must call `toDateStr(d)` before inserting into Drizzle `date` columns (which expect `"YYYY-MM-DD"` strings).
+- API errors are wrapped in `ApiError<T>` from `custom-fetch`. Access the server error message via `err.data?.error`, not `err.error`.
 
 ## Product
 

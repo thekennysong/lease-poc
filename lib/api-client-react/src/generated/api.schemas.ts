@@ -13,6 +13,17 @@ export interface ErrorResponse {
   error: string;
 }
 
+/**
+ * ASC 842 lease classification
+ */
+export type LeaseLeaseClassification =
+  (typeof LeaseLeaseClassification)[keyof typeof LeaseLeaseClassification];
+
+export const LeaseLeaseClassification = {
+  operating: "operating",
+  finance: "finance",
+} as const;
+
 export type LeasePaymentFrequency =
   (typeof LeasePaymentFrequency)[keyof typeof LeasePaymentFrequency];
 
@@ -40,6 +51,8 @@ export interface Lease {
   presentValue: number;
   /** Annual incremental borrowing rate as percentage (e.g. 6 for 6%) */
   borrowingRate: number;
+  /** ASC 842 lease classification */
+  leaseClassification: LeaseLeaseClassification;
   /** @nullable */
   rouAssetAccount?: string | null;
   /** @nullable */
@@ -60,6 +73,14 @@ export interface Lease {
   nextPaymentDate?: string | null;
   createdAt: string;
 }
+
+export type LeaseInputLeaseClassification =
+  (typeof LeaseInputLeaseClassification)[keyof typeof LeaseInputLeaseClassification];
+
+export const LeaseInputLeaseClassification = {
+  operating: "operating",
+  finance: "finance",
+} as const;
 
 export type LeaseInputPaymentFrequency =
   (typeof LeaseInputPaymentFrequency)[keyof typeof LeaseInputPaymentFrequency];
@@ -84,6 +105,7 @@ export interface LeaseInput {
   presentValue: number;
   /** @minimum 0 */
   borrowingRate: number;
+  leaseClassification?: LeaseInputLeaseClassification;
   rouAssetAccount?: string;
   leaseLiabilityAccount?: string;
   interestExpenseAccount?: string;
@@ -91,6 +113,14 @@ export interface LeaseInput {
   cashAccount?: string;
   paymentFrequency?: LeaseInputPaymentFrequency;
 }
+
+export type LeaseUpdateLeaseClassification =
+  (typeof LeaseUpdateLeaseClassification)[keyof typeof LeaseUpdateLeaseClassification];
+
+export const LeaseUpdateLeaseClassification = {
+  operating: "operating",
+  finance: "finance",
+} as const;
 
 export type LeaseUpdatePaymentFrequency =
   (typeof LeaseUpdatePaymentFrequency)[keyof typeof LeaseUpdatePaymentFrequency];
@@ -123,6 +153,7 @@ export interface LeaseUpdate {
   presentValue?: number;
   /** @minimum 0 */
   borrowingRate?: number;
+  leaseClassification?: LeaseUpdateLeaseClassification;
   rouAssetAccount?: string;
   leaseLiabilityAccount?: string;
   interestExpenseAccount?: string;
@@ -131,6 +162,14 @@ export interface LeaseUpdate {
   paymentFrequency?: LeaseUpdatePaymentFrequency;
   status?: LeaseUpdateStatus;
 }
+
+export type LeaseWithScheduleLeaseClassification =
+  (typeof LeaseWithScheduleLeaseClassification)[keyof typeof LeaseWithScheduleLeaseClassification];
+
+export const LeaseWithScheduleLeaseClassification = {
+  operating: "operating",
+  finance: "finance",
+} as const;
 
 export type LeaseWithSchedulePaymentFrequency =
   (typeof LeaseWithSchedulePaymentFrequency)[keyof typeof LeaseWithSchedulePaymentFrequency];
@@ -181,6 +220,7 @@ export interface LeaseWithSchedule {
   monthlyPayment: number;
   presentValue: number;
   borrowingRate: number;
+  leaseClassification: LeaseWithScheduleLeaseClassification;
   /** @nullable */
   rouAssetAccount?: string | null;
   /** @nullable */

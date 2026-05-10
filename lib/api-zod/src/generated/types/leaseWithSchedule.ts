@@ -5,6 +5,7 @@
  * Double Lease Capitalization API
  * OpenAPI spec version: 0.1.0
  */
+import type { LeaseWithScheduleLeaseClassification } from "./leaseWithScheduleLeaseClassification";
 import type { LeaseWithSchedulePaymentFrequency } from "./leaseWithSchedulePaymentFrequency";
 import type { LeaseWithScheduleStatus } from "./leaseWithScheduleStatus";
 import type { ScheduleEntry } from "./scheduleEntry";
@@ -18,6 +19,7 @@ export interface LeaseWithSchedule {
   monthlyPayment: number;
   presentValue: number;
   borrowingRate: number;
+  leaseClassification: LeaseWithScheduleLeaseClassification;
   /** @nullable */
   rouAssetAccount?: string | null;
   /** @nullable */

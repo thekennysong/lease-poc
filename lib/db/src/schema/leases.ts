@@ -28,6 +28,11 @@ export const scheduleStatusEnum = pgEnum("schedule_status", [
   "posted",
 ]);
 
+export const leaseClassificationEnum = pgEnum("lease_classification", [
+  "operating",
+  "finance",
+]);
+
 export const leasesTable = pgTable("leases", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -43,6 +48,7 @@ export const leasesTable = pgTable("leases", {
   amortizationExpenseAccount: text("amortization_expense_account"),
   cashAccount: text("cash_account"),
   paymentFrequency: paymentFrequencyEnum("payment_frequency").notNull().default("monthly"),
+  leaseClassification: leaseClassificationEnum("lease_classification").notNull().default("operating"),
   status: leaseStatusEnum("status").notNull().default("draft"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

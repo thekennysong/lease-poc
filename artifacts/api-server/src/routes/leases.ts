@@ -11,12 +11,18 @@ import {
   PostLeasePaymentsParams,
   PostLeasePaymentsBody,
 } from "@workspace/api-zod";
-import { generateSchedule } from "../lib/amortization";
+import { generateSchedule, type PaymentFrequency, type LeaseClassification } from "../lib/amortization";
 
 const router: IRouter = Router();
 
 function toNumber(v: string | null | undefined): number {
   return v == null ? 0 : parseFloat(v);
+}
+
+/** Drizzle date columns require "YYYY-MM-DD" strings; Zod coerces format:date to Date objects. */
+function toDateStr(d: Date | string): string {
+  if (d instanceof Date) return d.toISOString().split("T")[0];
+  return d;
 }
 
 function mapLease(lease: typeof leasesTable.$inferSelect) {
@@ -29,6 +35,7 @@ function mapLease(lease: typeof leasesTable.$inferSelect) {
     monthlyPayment: toNumber(lease.monthlyPayment),
     presentValue: toNumber(lease.presentValue),
     borrowingRate: toNumber(lease.borrowingRate),
+    leaseClassification: lease.leaseClassification,
     rouAssetAccount: lease.rouAssetAccount,
     leaseLiabilityAccount: lease.leaseLiabilityAccount,
     interestExpenseAccount: lease.interestExpenseAccount,
@@ -51,7 +58,6 @@ async function attachScheduleSummary(leaseId: number, mapped: ReturnType<typeof 
     .orderBy(scheduleEntriesTable.periodNumber);
 
   if (entries.length > 0) {
-    // Current balance = ending balance of the last posted entry, or beginning of first draft
     const lastPosted = [...entries].reverse().find((e) => e.status === "posted");
     const firstDraft = entries.find((e) => e.status === "draft");
 
@@ -68,6 +74,18 @@ async function attachScheduleSummary(leaseId: number, mapped: ReturnType<typeof 
   }
 
   return mapped;
+}
+
+function buildScheduleRows(lease: typeof leasesTable.$inferSelect) {
+  return generateSchedule(
+    toNumber(lease.presentValue),
+    toNumber(lease.monthlyPayment),
+    toNumber(lease.borrowingRate),
+    lease.termMonths,
+    lease.commencementDate,
+    lease.paymentFrequency as PaymentFrequency,
+    lease.leaseClassification as LeaseClassification,
+  );
 }
 
 // GET /leases
@@ -88,7 +106,6 @@ router.get("/leases/summary", async (req, res): Promise<void> => {
 
   const activeLeases = leases.filter((l) => l.status === "active").length;
 
-  // YTD interest = sum of interest on posted schedule entries this calendar year
   const currentYear = new Date().getFullYear();
   const ytdStart = `${currentYear}-01-01`;
   const ytdEnd = `${currentYear}-12-31`;
@@ -106,7 +123,6 @@ router.get("/leases/summary", async (req, res): Promise<void> => {
 
   const interestExpenseYtd = ytdRows.reduce((sum, r) => sum + toNumber(r.interest), 0);
 
-  // Outstanding balance = sum of ending balances of last posted entry per lease
   let outstandingLeaseLiability = 0;
   for (const lease of leases) {
     const lastPosted = await db
@@ -191,11 +207,12 @@ router.post("/leases", async (req, res): Promise<void> => {
     .values({
       name: data.name,
       lessor: data.lessor,
-      commencementDate: data.commencementDate,
+      commencementDate: toDateStr(data.commencementDate),
       termMonths: data.termMonths,
       monthlyPayment: data.monthlyPayment.toString(),
       presentValue: data.presentValue.toString(),
       borrowingRate: data.borrowingRate.toString(),
+      leaseClassification: (data.leaseClassification as "operating" | "finance") ?? "operating",
       rouAssetAccount: data.rouAssetAccount,
       leaseLiabilityAccount: data.leaseLiabilityAccount,
       interestExpenseAccount: data.interestExpenseAccount,
@@ -206,14 +223,7 @@ router.post("/leases", async (req, res): Promise<void> => {
     })
     .returning();
 
-  // Generate amortization schedule
-  const rows = generateSchedule(
-    data.presentValue,
-    data.monthlyPayment,
-    data.borrowingRate,
-    data.termMonths,
-    data.commencementDate,
-  );
+  const rows = buildScheduleRows(lease);
 
   if (rows.length > 0) {
     await db.insert(scheduleEntriesTable).values(
@@ -257,11 +267,12 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
 
   if (data.name !== undefined) updateData.name = data.name;
   if (data.lessor !== undefined) updateData.lessor = data.lessor;
-  if (data.commencementDate !== undefined) updateData.commencementDate = data.commencementDate;
+  if (data.commencementDate !== undefined) updateData.commencementDate = toDateStr(data.commencementDate);
   if (data.termMonths !== undefined) updateData.termMonths = data.termMonths;
   if (data.monthlyPayment !== undefined) updateData.monthlyPayment = data.monthlyPayment.toString();
   if (data.presentValue !== undefined) updateData.presentValue = data.presentValue.toString();
   if (data.borrowingRate !== undefined) updateData.borrowingRate = data.borrowingRate.toString();
+  if (data.leaseClassification !== undefined) updateData.leaseClassification = data.leaseClassification;
   if (data.rouAssetAccount !== undefined) updateData.rouAssetAccount = data.rouAssetAccount;
   if (data.leaseLiabilityAccount !== undefined) updateData.leaseLiabilityAccount = data.leaseLiabilityAccount;
   if (data.interestExpenseAccount !== undefined) updateData.interestExpenseAccount = data.interestExpenseAccount;
@@ -281,13 +292,14 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  // If key financial fields changed, regenerate the schedule (only draft entries)
   const regenerate =
     data.monthlyPayment !== undefined ||
     data.presentValue !== undefined ||
     data.borrowingRate !== undefined ||
     data.termMonths !== undefined ||
-    data.commencementDate !== undefined;
+    data.commencementDate !== undefined ||
+    data.paymentFrequency !== undefined ||
+    data.leaseClassification !== undefined;
 
   if (regenerate) {
     await db
@@ -299,13 +311,8 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
         ),
       );
 
-    const rows = generateSchedule(
-      toNumber(lease.monthlyPayment),
-      toNumber(lease.monthlyPayment),
-      toNumber(lease.borrowingRate),
-      lease.termMonths,
-      lease.commencementDate,
-    );
+    // Bug 1 fix: first arg is presentValue, not monthlyPayment
+    const rows = buildScheduleRows(lease);
 
     if (rows.length > 0) {
       await db.insert(scheduleEntriesTable).values(
@@ -408,7 +415,6 @@ router.post("/leases/:id/schedule/post", async (req, res): Promise<void> => {
     return;
   }
 
-  // Post all draft entries up through the given period
   await db
     .update(scheduleEntriesTable)
     .set({ status: "posted" })

@@ -239,6 +239,7 @@ components:
         - monthlyPayment
         - presentValue
         - borrowingRate
+        - leaseClassification
         - status
         - createdAt
       properties:
@@ -260,6 +261,10 @@ components:
         borrowingRate:
           type: number
           description: Annual incremental borrowing rate as percentage (e.g. 6 for 6%)
+        leaseClassification:
+          type: string
+          enum: [operating, finance]
+          description: ASC 842 lease classification
         rouAssetAccount:
           type: ["string", "null"]
         leaseLiabilityAccount:
@@ -319,6 +324,9 @@ components:
         borrowingRate:
           type: number
           minimum: 0
+        leaseClassification:
+          type: string
+          enum: [operating, finance]
         rouAssetAccount:
           type: string
         leaseLiabilityAccount:
@@ -356,6 +364,9 @@ components:
         borrowingRate:
           type: number
           minimum: 0
+        leaseClassification:
+          type: string
+          enum: [operating, finance]
         rouAssetAccount:
           type: string
         leaseLiabilityAccount:
@@ -384,6 +395,7 @@ components:
         - monthlyPayment
         - presentValue
         - borrowingRate
+        - leaseClassification
         - status
         - createdAt
         - schedule
@@ -405,6 +417,9 @@ components:
           type: number
         borrowingRate:
           type: number
+        leaseClassification:
+          type: string
+          enum: [operating, finance]
         rouAssetAccount:
           type: ["string", "null"]
         leaseLiabilityAccount:

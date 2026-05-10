@@ -5,6 +5,7 @@
  * Double Lease Capitalization API
  * OpenAPI spec version: 0.1.0
  */
+import type { LeaseUpdateLeaseClassification } from "./leaseUpdateLeaseClassification";
 import type { LeaseUpdatePaymentFrequency } from "./leaseUpdatePaymentFrequency";
 import type { LeaseUpdateStatus } from "./leaseUpdateStatus";
 
@@ -21,6 +22,7 @@ export interface LeaseUpdate {
   presentValue?: number;
   /** @minimum 0 */
   borrowingRate?: number;
+  leaseClassification?: LeaseUpdateLeaseClassification;
   rouAssetAccount?: string;
   leaseLiabilityAccount?: string;
   interestExpenseAccount?: string;

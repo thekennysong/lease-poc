@@ -1,11 +1,11 @@
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { format } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCreateLease, getListLeasesQueryKey, getGetLeasesSummaryQueryKey } from "@workspace/api-client-react";
-import { CalendarIcon, Calculator, AlertTriangle } from "lucide-react";
+import { CalendarIcon, Calculator, AlertTriangle, ChevronDown, Info } from "lucide-react";
 
 import {
   Dialog,
@@ -30,12 +30,15 @@ import { Calendar } from "@/components/ui/calendar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Switch } from "@/components/ui/switch";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, round2 } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type PaymentFrequency = "monthly" | "quarterly" | "annually";
 type LeaseClassification = "operating" | "finance";
+type PaymentTiming = "advance" | "arrears";
 
 function paymentsPerYear(freq: PaymentFrequency): number {
   if (freq === "monthly") return 12;
@@ -47,13 +50,23 @@ function monthsPerPeriod(freq: PaymentFrequency): number {
   return 12 / paymentsPerYear(freq);
 }
 
-/** Present value of an ordinary annuity */
-function computePV(periodicPayment: number, annualRate: number, termMonths: number, freq: PaymentFrequency): number {
+/**
+ * Present value of an annuity. For "advance" timing (annuity-due) the result is
+ * multiplied by (1 + r) because each cashflow occurs one period earlier.
+ */
+function computePV(
+  periodicPayment: number,
+  annualRate: number,
+  termMonths: number,
+  freq: PaymentFrequency,
+  timing: PaymentTiming,
+): number {
   const ppy = paymentsPerYear(freq);
   const r = annualRate / 100 / ppy;
   const n = termMonths / monthsPerPeriod(freq);
   if (r === 0) return round2(periodicPayment * n);
-  return round2(periodicPayment * (1 - Math.pow(1 + r, -n)) / r);
+  const ordinary = periodicPayment * (1 - Math.pow(1 + r, -n)) / r;
+  return round2(timing === "advance" ? ordinary * (1 + r) : ordinary);
 }
 
 const formSchema = z.object({
@@ -71,6 +84,11 @@ const formSchema = z.object({
   amortizationExpenseAccount: z.string().optional(),
   cashAccount: z.string().optional(),
   paymentFrequency: z.enum(["monthly", "quarterly", "annually"]).default("monthly"),
+  paymentTiming: z.enum(["advance", "arrears"]).default("arrears"),
+  isShortTerm: z.boolean().default(false),
+  prepaidRent: z.coerce.number().min(0).default(0),
+  initialDirectCosts: z.coerce.number().min(0).default(0),
+  leaseIncentives: z.coerce.number().min(0).default(0),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -84,6 +102,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const createLease = useCreateLease();
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -102,24 +121,40 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
       amortizationExpenseAccount: "",
       cashAccount: "",
       paymentFrequency: "monthly",
+      paymentTiming: "arrears",
+      isShortTerm: false,
+      prepaidRent: 0,
+      initialDirectCosts: 0,
+      leaseIncentives: 0,
     },
   });
 
   const watchValues = form.watch();
+  const shortTermEligible = watchValues.termMonths > 0 && watchValues.termMonths <= 12;
 
-  // Whether termMonths is divisible by the period length for the chosen frequency
+  // If user makes term > 12, force isShortTerm off
+  if (!shortTermEligible && watchValues.isShortTerm) {
+    form.setValue("isShortTerm", false);
+  }
+
   const termValid = useMemo(() => {
     const mpp = monthsPerPeriod(watchValues.paymentFrequency);
     return watchValues.termMonths > 0 && watchValues.termMonths % mpp === 0;
   }, [watchValues.termMonths, watchValues.paymentFrequency]);
 
-  // Computed PV from the annuity formula
   const computedPV = useMemo(() => {
-    const { monthlyPayment, borrowingRate, termMonths, paymentFrequency } = watchValues;
+    const { monthlyPayment, borrowingRate, termMonths, paymentFrequency, paymentTiming } = watchValues;
     if (!monthlyPayment || borrowingRate == null || !termMonths) return null;
     if (!termValid) return null;
-    return computePV(monthlyPayment, borrowingRate, termMonths, paymentFrequency);
-  }, [watchValues.monthlyPayment, watchValues.borrowingRate, watchValues.termMonths, watchValues.paymentFrequency, termValid]);
+    return computePV(monthlyPayment, borrowingRate, termMonths, paymentFrequency, paymentTiming);
+  }, [
+    watchValues.monthlyPayment,
+    watchValues.borrowingRate,
+    watchValues.termMonths,
+    watchValues.paymentFrequency,
+    watchValues.paymentTiming,
+    termValid,
+  ]);
 
   const pvDrift = computedPV !== null && watchValues.presentValue > 0
     ? Math.abs(watchValues.presentValue - computedPV) > 1
@@ -131,9 +166,40 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
     }
   }
 
-  // Live schedule preview — mirrors the server logic exactly
+  // Computed opening ROU = PV + prepaid + IDC − incentives
+  const openingRou = useMemo(
+    () =>
+      round2(
+        watchValues.presentValue +
+          (watchValues.prepaidRent ?? 0) +
+          (watchValues.initialDirectCosts ?? 0) -
+          (watchValues.leaseIncentives ?? 0),
+      ),
+    [
+      watchValues.presentValue,
+      watchValues.prepaidRent,
+      watchValues.initialDirectCosts,
+      watchValues.leaseIncentives,
+    ],
+  );
+
+  // Live schedule preview — mirrors the server logic exactly. Skipped for short-term leases.
   const previewSchedule = useMemo(() => {
-    const { termMonths, presentValue, monthlyPayment, borrowingRate, commencementDate, paymentFrequency, leaseClassification } = watchValues;
+    const {
+      termMonths,
+      presentValue,
+      monthlyPayment,
+      borrowingRate,
+      commencementDate,
+      paymentFrequency,
+      leaseClassification,
+      paymentTiming,
+      isShortTerm,
+      prepaidRent,
+      initialDirectCosts,
+      leaseIncentives,
+    } = watchValues;
+    if (isShortTerm) return [];
     if (!termMonths || !presentValue || !monthlyPayment || borrowingRate == null || !commencementDate) return [];
     if (!termValid) return [];
 
@@ -142,15 +208,20 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
     const numPeriods = termMonths / mpp;
     const periodicRate = borrowingRate / 100 / ppy;
 
-    const totalUndiscounted = monthlyPayment * numPeriods;
-    const straightLineExpense = round2(totalUndiscounted / numPeriods);
-    const financeRouPerPeriod = round2(presentValue / numPeriods);
+    const totalLeaseCost =
+      monthlyPayment * numPeriods + (prepaidRent ?? 0) + (initialDirectCosts ?? 0) - (leaseIncentives ?? 0);
+    const straightLineExpense = round2(totalLeaseCost / numPeriods);
+
+    const opening = round2(
+      presentValue + (prepaidRent ?? 0) + (initialDirectCosts ?? 0) - (leaseIncentives ?? 0),
+    );
+    const financeRouPerPeriod = round2(opening / numPeriods);
 
     const schedule = [];
     let balance = presentValue;
 
     for (let i = 1; i <= numPeriods; i++) {
-      const interest = round2(balance * periodicRate);
+      const interest = paymentTiming === "advance" && i === 1 ? 0 : round2(balance * periodicRate);
       const principal = round2(monthlyPayment - interest);
       let endingBalance = round2(balance - principal);
       if (i === numPeriods) endingBalance = 0;
@@ -159,8 +230,9 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
         ? round2(straightLineExpense - interest)
         : financeRouPerPeriod;
 
+      const offset = paymentTiming === "advance" ? (i - 1) * mpp : i * mpp;
       const pDate = new Date(commencementDate);
-      pDate.setMonth(pDate.getMonth() + i * mpp);
+      pDate.setMonth(pDate.getMonth() + offset);
 
       schedule.push({
         period: i,
@@ -184,6 +256,11 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
     watchValues.commencementDate,
     watchValues.paymentFrequency,
     watchValues.leaseClassification,
+    watchValues.paymentTiming,
+    watchValues.isShortTerm,
+    watchValues.prepaidRent,
+    watchValues.initialDirectCosts,
+    watchValues.leaseIncentives,
     termValid,
   ]);
 
@@ -303,6 +380,52 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                             </FormItem>
                           )}
                         />
+                        <FormField
+                          control={form.control}
+                          name="paymentTiming"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Payment Timing</FormLabel>
+                              <Select onValueChange={field.onChange} value={field.value}>
+                                <FormControl>
+                                  <SelectTrigger data-testid="input-timing">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="arrears">Arrears (period-end)</SelectItem>
+                                  <SelectItem value="advance">Advance (period-start)</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name="isShortTerm"
+                          render={({ field }) => (
+                            <FormItem className="flex flex-col">
+                              <FormLabel>Short-Term Election</FormLabel>
+                              <div className="flex items-center gap-3 h-10 px-3 rounded-md border bg-background">
+                                <FormControl>
+                                  <Switch
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                    disabled={!shortTermEligible}
+                                    data-testid="input-shortterm"
+                                  />
+                                </FormControl>
+                                <span className="text-sm text-muted-foreground">
+                                  {shortTermEligible
+                                    ? "Skip schedule (≤12 mo)"
+                                    : "Term > 12 mo (ineligible)"}
+                                </span>
+                              </div>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
                       </div>
                     </div>
 
@@ -394,12 +517,18 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                           name="presentValue"
                           render={({ field }) => (
                             <FormItem className="col-span-2">
-                              <FormLabel>Present Value / ROU Asset</FormLabel>
+                              <FormLabel>Present Value / Lease Liability</FormLabel>
                               <div className="flex gap-2">
                                 <FormControl>
                                   <div className="relative flex-1">
                                     <span className="absolute left-3 top-2.5 text-muted-foreground">$</span>
-                                    <Input type="number" className="pl-7" data-testid="input-pv" {...field} />
+                                    <Input
+                                      type="number"
+                                      className="pl-7"
+                                      data-testid="input-pv"
+                                      disabled={watchValues.isShortTerm}
+                                      {...field}
+                                    />
                                   </div>
                                 </FormControl>
                                 <Button
@@ -407,7 +536,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                                   variant="outline"
                                   size="sm"
                                   onClick={handleComputePV}
-                                  disabled={computedPV === null}
+                                  disabled={computedPV === null || watchValues.isShortTerm}
                                   data-testid="button-compute-pv"
                                   className="shrink-0 gap-1.5"
                                 >
@@ -415,7 +544,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                                   Compute PV
                                 </Button>
                               </div>
-                              {pvDrift && (
+                              {pvDrift && !watchValues.isShortTerm && (
                                 <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 mt-1" data-testid="warning-pv-drift">
                                   <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                                   <span>
@@ -429,6 +558,80 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                         />
                       </div>
                     </div>
+
+                    {/* Advanced — opening ROU adjustments */}
+                    <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                      <CollapsibleTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="flex w-full justify-between p-2 -mx-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground hover-elevate"
+                          data-testid="button-advanced"
+                        >
+                          <span>Advanced — Opening ROU Adjustments</span>
+                          <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOpen && "rotate-180")} />
+                        </Button>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="pt-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          <FormField
+                            control={form.control}
+                            name="prepaidRent"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>Prepaid Rent</FormLabel>
+                                <FormControl>
+                                  <div className="relative">
+                                    <span className="absolute left-3 top-2.5 text-muted-foreground">$</span>
+                                    <Input type="number" className="pl-7" data-testid="input-prepaid" {...field} />
+                                  </div>
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name="initialDirectCosts"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>Initial Direct Costs</FormLabel>
+                                <FormControl>
+                                  <div className="relative">
+                                    <span className="absolute left-3 top-2.5 text-muted-foreground">$</span>
+                                    <Input type="number" className="pl-7" data-testid="input-idc" {...field} />
+                                  </div>
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name="leaseIncentives"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>Lease Incentives</FormLabel>
+                                <FormControl>
+                                  <div className="relative">
+                                    <span className="absolute left-3 top-2.5 text-muted-foreground">$</span>
+                                    <Input type="number" className="pl-7" data-testid="input-incentives" {...field} />
+                                  </div>
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <div className="flex flex-col">
+                            <span className="text-sm font-medium leading-none mb-2">Opening ROU Asset</span>
+                            <div className="h-10 px-3 flex items-center rounded-md border bg-muted/30 font-mono text-sm" data-testid="text-opening-rou">
+                              {formatCurrency(openingRou)}
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-1">PV + Prepaid + IDC − Incentives</p>
+                          </div>
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
                   </div>
 
                   {/* Right column — GL accounts */}
@@ -506,7 +709,21 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                   </div>
                 </div>
 
-                {previewSchedule.length > 0 && (
+                {watchValues.isShortTerm ? (
+                  <div className="mt-8 border-t pt-6">
+                    <div className="flex items-start gap-3 p-4 rounded-md border border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/30" data-testid="note-shortterm">
+                      <Info className="h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400 mt-0.5" />
+                      <div className="space-y-1 text-sm">
+                        <p className="font-medium text-blue-900 dark:text-blue-100">Short-term lease election</p>
+                        <p className="text-blue-700 dark:text-blue-300">
+                          No amortization schedule, ROU asset, or lease liability will be recorded.
+                          Recognize the periodic payment of {formatCurrency(watchValues.monthlyPayment)} as
+                          straight-line expense each {watchValues.paymentFrequency.replace(/ly$/, "")}.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : previewSchedule.length > 0 ? (
                   <div className="mt-8 border-t pt-6">
                     <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
                       Schedule Preview
@@ -549,7 +766,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                       </Table>
                     </div>
                   </div>
-                )}
+                ) : null}
               </form>
             </Form>
           </div>

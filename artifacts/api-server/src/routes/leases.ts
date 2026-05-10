@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq, and, lte, gte, sql } from "drizzle-orm";
-import { db, leasesTable, scheduleEntriesTable } from "@workspace/db";
+import { db, leasesTable, scheduleEntriesTable, appSettingsTable } from "@workspace/db";
 import {
   CreateLeaseBody,
   UpdateLeaseBody,
@@ -10,8 +10,15 @@ import {
   GetLeaseScheduleParams,
   PostLeasePaymentsParams,
   PostLeasePaymentsBody,
+  GetLeasesSummaryQueryParams,
 } from "@workspace/api-zod";
-import { generateSchedule, type PaymentFrequency, type LeaseClassification } from "../lib/amortization";
+import {
+  generateSchedule,
+  computeOpeningRou,
+  type PaymentFrequency,
+  type LeaseClassification,
+  type PaymentTiming,
+} from "../lib/amortization";
 
 const router: IRouter = Router();
 
@@ -26,6 +33,10 @@ function toDateStr(d: Date | string): string {
 }
 
 function mapLease(lease: typeof leasesTable.$inferSelect) {
+  const presentValue = toNumber(lease.presentValue);
+  const prepaidRent = toNumber(lease.prepaidRent);
+  const initialDirectCosts = toNumber(lease.initialDirectCosts);
+  const leaseIncentives = toNumber(lease.leaseIncentives);
   return {
     id: lease.id,
     name: lease.name,
@@ -33,7 +44,7 @@ function mapLease(lease: typeof leasesTable.$inferSelect) {
     commencementDate: lease.commencementDate,
     termMonths: lease.termMonths,
     monthlyPayment: toNumber(lease.monthlyPayment),
-    presentValue: toNumber(lease.presentValue),
+    presentValue,
     borrowingRate: toNumber(lease.borrowingRate),
     leaseClassification: lease.leaseClassification,
     rouAssetAccount: lease.rouAssetAccount,
@@ -42,6 +53,16 @@ function mapLease(lease: typeof leasesTable.$inferSelect) {
     amortizationExpenseAccount: lease.amortizationExpenseAccount,
     cashAccount: lease.cashAccount,
     paymentFrequency: lease.paymentFrequency,
+    paymentTiming: lease.paymentTiming,
+    isShortTerm: lease.isShortTerm,
+    prepaidRent,
+    initialDirectCosts,
+    leaseIncentives,
+    openingRouAsset: computeOpeningRou(presentValue, {
+      prepaidRent,
+      initialDirectCosts,
+      leaseIncentives,
+    }),
     status: lease.status,
     createdAt: lease.createdAt.toISOString(),
     currentBalance: null as number | null,
@@ -85,7 +106,30 @@ function buildScheduleRows(lease: typeof leasesTable.$inferSelect) {
     lease.commencementDate,
     lease.paymentFrequency as PaymentFrequency,
     lease.leaseClassification as LeaseClassification,
+    lease.paymentTiming as PaymentTiming,
+    {
+      prepaidRent: toNumber(lease.prepaidRent),
+      initialDirectCosts: toNumber(lease.initialDirectCosts),
+      leaseIncentives: toNumber(lease.leaseIncentives),
+    },
   );
+}
+
+/** Read fiscal year start month — query param overrides app_settings; both default to 1. */
+async function resolveFiscalYearStartMonth(override?: number): Promise<number> {
+  if (override != null && override >= 1 && override <= 12) return override;
+  const [row] = await db.select().from(appSettingsTable).limit(1);
+  return row?.fiscalYearStartMonth ?? 1;
+}
+
+/** Compute fiscal-year window enclosing `now`, given start month (1-12). */
+function fiscalYearWindow(now: Date, startMonth: number): { start: string; end: string } {
+  const year = now.getMonth() + 1 >= startMonth ? now.getFullYear() : now.getFullYear() - 1;
+  const startDate = new Date(Date.UTC(year, startMonth - 1, 1));
+  const endDate = new Date(Date.UTC(year + 1, startMonth - 1, 1));
+  endDate.setUTCDate(endDate.getUTCDate() - 1);
+  const fmt = (d: Date) => d.toISOString().split("T")[0];
+  return { start: fmt(startDate), end: fmt(endDate) };
 }
 
 // GET /leases
@@ -102,46 +146,55 @@ router.get("/leases", async (req, res): Promise<void> => {
 
 // GET /leases/summary
 router.get("/leases/summary", async (req, res): Promise<void> => {
-  const leases = await db.select().from(leasesTable);
+  const queryParse = GetLeasesSummaryQueryParams.safeParse(req.query);
+  if (!queryParse.success) {
+    res.status(400).json({ error: queryParse.error.message });
+    return;
+  }
+  const fiscalYearStartMonth = await resolveFiscalYearStartMonth(
+    queryParse.data.fiscalYearStartMonth,
+  );
 
+  const leases = await db.select().from(leasesTable);
   const activeLeases = leases.filter((l) => l.status === "active").length;
 
-  const currentYear = new Date().getFullYear();
-  const ytdStart = `${currentYear}-01-01`;
-  const ytdEnd = `${currentYear}-12-31`;
-
+  // YTD interest within current fiscal year. Joined against leases so we can
+  // exclude leases currently flagged short-term — even though wiping their
+  // schedule on toggle should make this redundant, defensive filtering avoids
+  // counting any stale rows.
+  const { start: ytdStart, end: ytdEnd } = fiscalYearWindow(new Date(), fiscalYearStartMonth);
   const ytdRows = await db
     .select({ interest: scheduleEntriesTable.interest })
     .from(scheduleEntriesTable)
+    .innerJoin(leasesTable, eq(leasesTable.id, scheduleEntriesTable.leaseId))
     .where(
       and(
         eq(scheduleEntriesTable.status, "posted"),
         gte(scheduleEntriesTable.paymentDate, ytdStart),
         lte(scheduleEntriesTable.paymentDate, ytdEnd),
+        eq(leasesTable.isShortTerm, false),
       ),
     );
-
   const interestExpenseYtd = ytdRows.reduce((sum, r) => sum + toNumber(r.interest), 0);
+
+  // Outstanding liability — single query: latest posted ending_balance per lease.
+  // Short-term leases are excluded because they have no schedule/liability.
+  const lastPostedRows = await db.execute<{ lease_id: number; ending_balance: string }>(sql`
+    SELECT DISTINCT ON (lease_id) lease_id, ending_balance
+    FROM ${scheduleEntriesTable}
+    WHERE status = 'posted'
+    ORDER BY lease_id, period_number DESC
+  `);
+  const lastPostedByLease = new Map<number, number>();
+  for (const r of lastPostedRows.rows) {
+    lastPostedByLease.set(r.lease_id, toNumber(r.ending_balance));
+  }
 
   let outstandingLeaseLiability = 0;
   for (const lease of leases) {
-    const lastPosted = await db
-      .select({ endingBalance: scheduleEntriesTable.endingBalance })
-      .from(scheduleEntriesTable)
-      .where(
-        and(
-          eq(scheduleEntriesTable.leaseId, lease.id),
-          eq(scheduleEntriesTable.status, "posted"),
-        ),
-      )
-      .orderBy(sql`${scheduleEntriesTable.periodNumber} DESC`)
-      .limit(1);
-
-    if (lastPosted.length > 0) {
-      outstandingLeaseLiability += toNumber(lastPosted[0].endingBalance);
-    } else {
-      outstandingLeaseLiability += toNumber(lease.presentValue);
-    }
+    if (lease.isShortTerm) continue;
+    const posted = lastPostedByLease.get(lease.id);
+    outstandingLeaseLiability += posted ?? toNumber(lease.presentValue);
   }
 
   res.json({
@@ -202,6 +255,14 @@ router.post("/leases", async (req, res): Promise<void> => {
 
   const data = parsed.data;
 
+  // Short-term lease exemption: ASC 842 § 842-20-25-2 only allows for terms ≤ 12 months.
+  if (data.isShortTerm && data.termMonths > 12) {
+    res.status(400).json({
+      error: "Short-term lease election requires termMonths ≤ 12",
+    });
+    return;
+  }
+
   const [lease] = await db
     .insert(leasesTable)
     .values({
@@ -219,27 +280,36 @@ router.post("/leases", async (req, res): Promise<void> => {
       amortizationExpenseAccount: data.amortizationExpenseAccount,
       cashAccount: data.cashAccount,
       paymentFrequency: (data.paymentFrequency as "monthly" | "quarterly" | "annually") ?? "monthly",
+      paymentTiming: (data.paymentTiming as "advance" | "arrears") ?? "arrears",
+      isShortTerm: data.isShortTerm ?? false,
+      prepaidRent: (data.prepaidRent ?? 0).toString(),
+      initialDirectCosts: (data.initialDirectCosts ?? 0).toString(),
+      leaseIncentives: (data.leaseIncentives ?? 0).toString(),
       status: "active",
     })
     .returning();
 
-  const rows = buildScheduleRows(lease);
+  // Skip schedule generation entirely for short-term leases — they get
+  // straight-line monthly expense recognition only, no ROU/liability tracking.
+  if (!lease.isShortTerm) {
+    const rows = buildScheduleRows(lease);
 
-  if (rows.length > 0) {
-    await db.insert(scheduleEntriesTable).values(
-      rows.map((r) => ({
-        leaseId: lease.id,
-        periodNumber: r.periodNumber,
-        paymentDate: r.paymentDate,
-        beginningBalance: r.beginningBalance,
-        payment: r.payment,
-        interest: r.interest,
-        principal: r.principal,
-        endingBalance: r.endingBalance,
-        rouAmortization: r.rouAmortization,
-        status: "draft" as const,
-      })),
-    );
+    if (rows.length > 0) {
+      await db.insert(scheduleEntriesTable).values(
+        rows.map((r) => ({
+          leaseId: lease.id,
+          periodNumber: r.periodNumber,
+          paymentDate: r.paymentDate,
+          beginningBalance: r.beginningBalance,
+          payment: r.payment,
+          interest: r.interest,
+          principal: r.principal,
+          endingBalance: r.endingBalance,
+          rouAmortization: r.rouAmortization,
+          status: "draft" as const,
+        })),
+      );
+    }
   }
 
   const mapped = mapLease(lease);
@@ -263,6 +333,23 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
   }
 
   const data = parsed.data;
+
+  // Pre-flight validation against the merged (current + incoming) state, so
+  // we never persist an invalid combination and only rollback at the catch site.
+  const [existing] = await db.select().from(leasesTable).where(eq(leasesTable.id, params.data.id));
+  if (!existing) {
+    res.status(404).json({ error: "Lease not found" });
+    return;
+  }
+  const nextIsShortTerm = data.isShortTerm ?? existing.isShortTerm;
+  const nextTermMonths = data.termMonths ?? existing.termMonths;
+  if (nextIsShortTerm && nextTermMonths > 12) {
+    res.status(400).json({
+      error: "Short-term lease election requires termMonths ≤ 12",
+    });
+    return;
+  }
+
   const updateData: Record<string, unknown> = {};
 
   if (data.name !== undefined) updateData.name = data.name;
@@ -279,6 +366,11 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
   if (data.amortizationExpenseAccount !== undefined) updateData.amortizationExpenseAccount = data.amortizationExpenseAccount;
   if (data.cashAccount !== undefined) updateData.cashAccount = data.cashAccount;
   if (data.paymentFrequency !== undefined) updateData.paymentFrequency = data.paymentFrequency;
+  if (data.paymentTiming !== undefined) updateData.paymentTiming = data.paymentTiming;
+  if (data.isShortTerm !== undefined) updateData.isShortTerm = data.isShortTerm;
+  if (data.prepaidRent !== undefined) updateData.prepaidRent = data.prepaidRent.toString();
+  if (data.initialDirectCosts !== undefined) updateData.initialDirectCosts = data.initialDirectCosts.toString();
+  if (data.leaseIncentives !== undefined) updateData.leaseIncentives = data.leaseIncentives.toString();
   if (data.status !== undefined) updateData.status = data.status;
 
   const [lease] = await db
@@ -292,6 +384,8 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const shortTermToggled = data.isShortTerm !== undefined && data.isShortTerm !== existing.isShortTerm;
+
   const regenerate =
     data.monthlyPayment !== undefined ||
     data.presentValue !== undefined ||
@@ -299,36 +393,52 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
     data.termMonths !== undefined ||
     data.commencementDate !== undefined ||
     data.paymentFrequency !== undefined ||
-    data.leaseClassification !== undefined;
+    data.leaseClassification !== undefined ||
+    data.paymentTiming !== undefined ||
+    shortTermToggled ||
+    data.prepaidRent !== undefined ||
+    data.initialDirectCosts !== undefined ||
+    data.leaseIncentives !== undefined;
 
   if (regenerate) {
-    await db
-      .delete(scheduleEntriesTable)
-      .where(
-        and(
-          eq(scheduleEntriesTable.leaseId, lease.id),
-          eq(scheduleEntriesTable.status, "draft"),
-        ),
-      );
+    // Toggling isShortTerm changes whether ANY schedule rows should exist for
+    // this lease. We must wipe posted rows too; otherwise the lease would carry
+    // historical interest/liability artifacts that the new election denies.
+    // Other regenerations (payment, rate, etc.) only clear drafts.
+    if (shortTermToggled) {
+      await db
+        .delete(scheduleEntriesTable)
+        .where(eq(scheduleEntriesTable.leaseId, lease.id));
+    } else {
+      await db
+        .delete(scheduleEntriesTable)
+        .where(
+          and(
+            eq(scheduleEntriesTable.leaseId, lease.id),
+            eq(scheduleEntriesTable.status, "draft"),
+          ),
+        );
+    }
 
-    // Bug 1 fix: first arg is presentValue, not monthlyPayment
-    const rows = buildScheduleRows(lease);
+    if (!lease.isShortTerm) {
+      const rows = buildScheduleRows(lease);
 
-    if (rows.length > 0) {
-      await db.insert(scheduleEntriesTable).values(
-        rows.map((r) => ({
-          leaseId: lease.id,
-          periodNumber: r.periodNumber,
-          paymentDate: r.paymentDate,
-          beginningBalance: r.beginningBalance,
-          payment: r.payment,
-          interest: r.interest,
-          principal: r.principal,
-          endingBalance: r.endingBalance,
-          rouAmortization: r.rouAmortization,
-          status: "draft" as const,
-        })),
-      );
+      if (rows.length > 0) {
+        await db.insert(scheduleEntriesTable).values(
+          rows.map((r) => ({
+            leaseId: lease.id,
+            periodNumber: r.periodNumber,
+            paymentDate: r.paymentDate,
+            beginningBalance: r.beginningBalance,
+            payment: r.payment,
+            interest: r.interest,
+            principal: r.principal,
+            endingBalance: r.endingBalance,
+            rouAmortization: r.rouAmortization,
+            status: "draft" as const,
+          })),
+        );
+      }
     }
   }
 

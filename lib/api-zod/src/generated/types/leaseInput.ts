@@ -7,6 +7,7 @@
  */
 import type { LeaseInputLeaseClassification } from "./leaseInputLeaseClassification";
 import type { LeaseInputPaymentFrequency } from "./leaseInputPaymentFrequency";
+import type { LeaseInputPaymentTiming } from "./leaseInputPaymentTiming";
 
 export interface LeaseInput {
   /** @minLength 1 */
@@ -29,4 +30,12 @@ export interface LeaseInput {
   amortizationExpenseAccount?: string;
   cashAccount?: string;
   paymentFrequency?: LeaseInputPaymentFrequency;
+  paymentTiming?: LeaseInputPaymentTiming;
+  isShortTerm?: boolean;
+  /** @minimum 0 */
+  prepaidRent?: number;
+  /** @minimum 0 */
+  initialDirectCosts?: number;
+  /** @minimum 0 */
+  leaseIncentives?: number;
 }

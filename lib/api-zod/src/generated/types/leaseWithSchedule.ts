@@ -7,6 +7,7 @@
  */
 import type { LeaseWithScheduleLeaseClassification } from "./leaseWithScheduleLeaseClassification";
 import type { LeaseWithSchedulePaymentFrequency } from "./leaseWithSchedulePaymentFrequency";
+import type { LeaseWithSchedulePaymentTiming } from "./leaseWithSchedulePaymentTiming";
 import type { LeaseWithScheduleStatus } from "./leaseWithScheduleStatus";
 import type { ScheduleEntry } from "./scheduleEntry";
 
@@ -31,6 +32,12 @@ export interface LeaseWithSchedule {
   /** @nullable */
   cashAccount?: string | null;
   paymentFrequency?: LeaseWithSchedulePaymentFrequency;
+  paymentTiming?: LeaseWithSchedulePaymentTiming;
+  isShortTerm?: boolean;
+  prepaidRent?: number;
+  initialDirectCosts?: number;
+  leaseIncentives?: number;
+  openingRouAsset?: number;
   status: LeaseWithScheduleStatus;
   /** @nullable */
   currentBalance?: number | null;

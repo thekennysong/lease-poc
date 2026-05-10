@@ -24,7 +24,7 @@ A month-end close lease capitalization app for finance teams. Manages ASC 842 / 
 
 ## Where things live
 
-- DB schema: `lib/db/src/schema/leases.ts`
+- DB schema: `lib/db/src/schema/leases.ts` (includes `appSettingsTable` singleton)
 - API contract: `lib/api-spec/openapi.yaml`
 - Generated hooks: `lib/api-client-react/src/generated/api.ts`
 - Generated Zod schemas: `lib/api-zod/src/generated/api.ts`
@@ -40,9 +40,15 @@ A month-end close lease capitalization app for finance teams. Manages ASC 842 / 
 - `borrowingRate` is stored as annual percentage (e.g. `5.5` for 5.5%). Monthly rate is derived as `rate / 100 / 12`.
 - Summary stats (active count, YTD interest, outstanding liability) are computed at query time, not cached.
 - `leaseClassification` is `"operating"` (default) or `"finance"`. Affects ROU amortization column in the schedule:
-  - **Operating (ASC 842):** ROU amortization = straight-line total expense minus interest for each period. Total expense is constant; interest front-loads, so ROU amortization back-loads.
-  - **Finance (ASC 842 / IFRS 16):** ROU amortization = PV / number of periods (straight-line depreciation of the asset independent of interest).
+  - **Operating (ASC 842):** ROU amortization = straight-line total expense minus interest for each period. Total expense includes opening ROU adjustments: `(sumPayments + prepaid + IDC − incentives) / numPeriods`. Interest front-loads, so ROU amortization back-loads.
+  - **Finance (ASC 842 / IFRS 16):** ROU amortization = openingROU / number of periods (straight-line depreciation of the asset independent of interest).
 - `paymentFrequency` is `"monthly"` (default), `"quarterly"`, or `"annually"`. Affects period count, periodic rate, and date increments. The `monthlyPayment` field stores the per-period payment regardless of frequency name.
+- `paymentTiming` is `"arrears"` (default — period-end, ordinary annuity) or `"advance"` (period-start, annuity-due). For `"advance"`: period 1 has zero interest (payment hits at t=0 before any time passes) and the first payment date equals the commencement date; subsequent periods accrue normally. The client-side PV preview multiplies the ordinary-annuity formula by `(1 + r)` for `"advance"`.
+- `isShortTerm` is the ASC 842 § 842-20-25-2 short-term lease election. Only allowed when `termMonths ≤ 12`; the API rejects with 400 otherwise. When true, **no schedule is generated, no ROU/liability is recorded**, and the lease is excluded from the outstanding-liability rollup. The detail page renders an explanatory note in place of the schedule and hides the Post Payments button.
+- Opening ROU adjustments — `prepaidRent`, `initialDirectCosts`, `leaseIncentives` (all `numeric(15,2)` defaulting to `"0"`). Computed `openingRouAsset = presentValue + prepaidRent + initialDirectCosts − leaseIncentives` is returned on `Lease` and `LeaseWithSchedule`. Lease liability stays at `presentValue`. Affects schedule: finance ROU/period uses opening ROU; operating SLE includes adjustments in `totalLeaseCost`. Surfaced in the modal under an "Advanced — Opening ROU Adjustments" collapsible.
+- Fiscal-year YTD — `appSettingsTable` is a single-row table with `fiscalYearStartMonth` (default 1 = January). `GET /leases/summary` accepts `?fiscalYearStartMonth=N` (1-12) to override; otherwise reads the settings row, otherwise defaults to 1. The YTD window is computed by `fiscalYearWindow(now, startMonth)` which rolls back to the prior calendar year when `now` is before the start month.
+- N+1 fix in `/leases/summary` — outstanding liability is computed with a single `SELECT DISTINCT ON (lease_id) ...` raw SQL query that returns the latest posted ending balance per lease, then joined in-memory against the leases list. Short-term leases are skipped. The YTD interest query also INNER JOINs `leases` and filters `isShortTerm = false`.
+- Toggling `isShortTerm` on PUT wipes **all** schedule rows for that lease (posted included) before regenerating, because the election fundamentally changes whether a schedule should exist. Other regeneration triggers (payment, rate, term, etc.) only clear drafts. Short-term eligibility (`termMonths ≤ 12`) is validated against the merged current+incoming state **before** the UPDATE runs, so an invalid combination is never persisted.
 - Orval generates `z.coerce.date()` for OpenAPI `format: date` fields. Route handlers must call `toDateStr(d)` before inserting into Drizzle `date` columns (which expect `"YYYY-MM-DD"` strings).
 - API errors are wrapped in `ApiError<T>` from `custom-fetch`. Access the server error message via `err.data?.error`, not `err.error`.
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, ArrowLeft } from "lucide-react";
+import { ChevronRight, ArrowLeft, Info } from "lucide-react";
 import { 
   useGetLease, 
   getGetLeaseQueryKey, 
@@ -114,10 +114,17 @@ export default function LeaseDetailPage() {
             <Badge variant={lease.status === "active" ? "default" : lease.status === "expired" ? "secondary" : "outline"}>
               {lease.status}
             </Badge>
+            {lease.isShortTerm && (
+              <Badge variant="outline" className="border-blue-300 text-blue-700 dark:border-blue-800 dark:text-blue-300" data-testid="badge-shortterm">
+                Short-term
+              </Badge>
+            )}
           </div>
-          <Button onClick={() => setPostModalOpen(true)} data-testid="button-post-payments">
-            Post Payments
-          </Button>
+          {!lease.isShortTerm && (
+            <Button onClick={() => setPostModalOpen(true)} data-testid="button-post-payments">
+              Post Payments
+            </Button>
+          )}
         </div>
 
         <Card>
@@ -158,7 +165,39 @@ export default function LeaseDetailPage() {
                 <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Classification</span>
                 <p className="font-medium capitalize">{lease.leaseClassification}</p>
               </div>
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Payment Timing</span>
+                <p className="font-medium capitalize">{lease.paymentTiming}</p>
+              </div>
             </div>
+
+            {((lease.prepaidRent ?? 0) > 0 ||
+              (lease.initialDirectCosts ?? 0) > 0 ||
+              (lease.leaseIncentives ?? 0) > 0) && (
+              <div className="mt-8 pt-6 border-t" data-testid="section-rou-adjustments">
+                <h3 className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-4">
+                  Opening ROU Adjustments
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-y-6 gap-x-8">
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Prepaid Rent</span>
+                    <p className="font-medium font-mono">{formatCurrency(lease.prepaidRent ?? 0)}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Initial Direct Costs</span>
+                    <p className="font-medium font-mono">{formatCurrency(lease.initialDirectCosts ?? 0)}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Lease Incentives</span>
+                    <p className="font-medium font-mono">−{formatCurrency(lease.leaseIncentives ?? 0)}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Opening ROU Asset</span>
+                    <p className="font-medium font-mono text-foreground">{formatCurrency(lease.openingRouAsset ?? lease.presentValue)}</p>
+                  </div>
+                </div>
+              </div>
+            )}
             
             {(lease.rouAssetAccount || lease.leaseLiabilityAccount) && (
               <div className="mt-8 pt-6 border-t grid grid-cols-2 md:grid-cols-4 gap-y-6 gap-x-8">
@@ -197,6 +236,24 @@ export default function LeaseDetailPage() {
           </CardContent>
         </Card>
 
+        {lease.isShortTerm ? (
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-3 p-4 rounded-md border border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/30" data-testid="note-shortterm">
+                <Info className="h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400 mt-0.5" />
+                <div className="space-y-1 text-sm">
+                  <p className="font-medium text-blue-900 dark:text-blue-100">Short-term lease election (ASC 842 §842-20-25-2)</p>
+                  <p className="text-blue-700 dark:text-blue-300">
+                    No amortization schedule, ROU asset, or lease liability is recorded.
+                    Recognize the periodic payment of {formatCurrency(lease.monthlyPayment)} as
+                    straight-line expense each {lease.paymentFrequency?.replace(/ly$/, "") ?? "month"}
+                    {" "}for {lease.termMonths} months.
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
         <Card>
           <CardHeader className="pb-3 border-b">
             <CardTitle className="text-lg">Amortization Schedule</CardTitle>
@@ -243,6 +300,7 @@ export default function LeaseDetailPage() {
             </TableBody>
           </Table>
         </Card>
+        )}
       </div>
 
       <Dialog open={postModalOpen} onOpenChange={setPostModalOpen}>

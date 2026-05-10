@@ -11,6 +11,13 @@ export interface ScheduleRow {
 
 export type PaymentFrequency = "monthly" | "quarterly" | "annually";
 export type LeaseClassification = "operating" | "finance";
+export type PaymentTiming = "advance" | "arrears";
+
+export interface OpeningRouAdjustments {
+  prepaidRent?: number;
+  initialDirectCosts?: number;
+  leaseIncentives?: number;
+}
 
 function paymentsPerYearFor(frequency: PaymentFrequency): number {
   if (frequency === "monthly") return 12;
@@ -18,18 +25,36 @@ function paymentsPerYearFor(frequency: PaymentFrequency): number {
   return 1;
 }
 
+/** Opening ROU = PV + prepaidRent + initialDirectCosts − leaseIncentives. */
+export function computeOpeningRou(
+  presentValue: number,
+  adjustments: OpeningRouAdjustments = {},
+): number {
+  const prepaid = adjustments.prepaidRent ?? 0;
+  const idc = adjustments.initialDirectCosts ?? 0;
+  const incentives = adjustments.leaseIncentives ?? 0;
+  return round2(presentValue + prepaid + idc - incentives);
+}
+
 /**
  * Generate a lease amortization schedule (ASC 842 / IFRS 16).
  *
  * Classification behaviour:
- *   finance  – ROU amortization is straight-line: presentValue / numPeriods
- *   operating – ROU amortization = straightLineLeaseExpense - interest
- *               where straightLineLeaseExpense = totalUndiscountedPayments / numPeriods
+ *   finance  – ROU amortization is straight-line: openingROU / numPeriods
+ *   operating – ROU amortization = totalLeaseExpense / numPeriods − interest
+ *               where totalLeaseExpense = sum(payments) + prepaid + IDC − incentives
  *               (keeps total P&L expense flat each period)
  *
  * Payment frequency:
  *   Converts termMonths into numPeriods based on paymentsPerYear.
  *   Throws if termMonths is not evenly divisible by the period length.
+ *
+ * Payment timing:
+ *   "arrears" (default) – first payment one period after commencement; interest
+ *                          accrues each period on the prior balance.
+ *   "advance"           – first payment on commencement date; period 1 has zero
+ *                          interest because the payment hits before any time
+ *                          passes. Subsequent periods accrue normally.
  */
 export function generateSchedule(
   presentValue: number,
@@ -39,6 +64,8 @@ export function generateSchedule(
   commencementDate: string,
   paymentFrequency: PaymentFrequency = "monthly",
   leaseClassification: LeaseClassification = "operating",
+  paymentTiming: PaymentTiming = "arrears",
+  adjustments: OpeningRouAdjustments = {},
 ): ScheduleRow[] {
   const ppy = paymentsPerYearFor(paymentFrequency);
   const monthsPerPeriod = 12 / ppy;
@@ -52,12 +79,17 @@ export function generateSchedule(
   const numPeriods = termMonths / monthsPerPeriod;
   const periodicRate = annualBorrowingRate / 100 / ppy;
 
-  // Straight-line lease expense per period (operating classification)
-  const totalUndiscounted = periodicPayment * numPeriods;
-  const straightLineExpense = round2(totalUndiscounted / numPeriods);
+  const openingRou = computeOpeningRou(presentValue, adjustments);
+  const prepaid = adjustments.prepaidRent ?? 0;
+  const idc = adjustments.initialDirectCosts ?? 0;
+  const incentives = adjustments.leaseIncentives ?? 0;
 
-  // Finance classification: flat ROU amortization
-  const financeRouPerPeriod = round2(presentValue / numPeriods);
+  // Operating: straight-line total lease cost includes opening adjustments
+  const totalLeaseCost = periodicPayment * numPeriods + prepaid + idc - incentives;
+  const straightLineExpense = round2(totalLeaseCost / numPeriods);
+
+  // Finance: flat ROU amortization based on opening ROU
+  const financeRouPerPeriod = round2(openingRou / numPeriods);
 
   const rows: ScheduleRow[] = [];
   let balance = presentValue;
@@ -66,7 +98,14 @@ export function generateSchedule(
 
   for (let i = 1; i <= numPeriods; i++) {
     const beginningBalance = balance;
-    const interest = round2(beginningBalance * periodicRate);
+
+    // Advance timing: no interest accrues in period 1 because the payment
+    // hits the lease at t=0, before any time has passed.
+    const interest =
+      paymentTiming === "advance" && i === 1
+        ? 0
+        : round2(beginningBalance * periodicRate);
+
     const principal = round2(periodicPayment - interest);
     let endingBalance = round2(beginningBalance - principal);
 
@@ -75,16 +114,16 @@ export function generateSchedule(
       endingBalance = 0;
     }
 
-    // ROU amortization depends on classification
-    let rouAmortization: number;
-    if (leaseClassification === "operating") {
-      rouAmortization = round2(straightLineExpense - interest);
-    } else {
-      rouAmortization = financeRouPerPeriod;
-    }
+    const rouAmortization =
+      leaseClassification === "operating"
+        ? round2(straightLineExpense - interest)
+        : financeRouPerPeriod;
 
+    // Payment date offset depends on timing
+    const monthOffset =
+      paymentTiming === "advance" ? (i - 1) * monthsPerPeriod : i * monthsPerPeriod;
     const paymentDate = new Date(startDate);
-    paymentDate.setMonth(startDate.getMonth() + i * monthsPerPeriod);
+    paymentDate.setMonth(startDate.getMonth() + monthOffset);
 
     rows.push({
       periodNumber: i,

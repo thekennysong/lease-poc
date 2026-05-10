@@ -69,6 +69,15 @@ paths:
       operationId: getLeasesSummary
       tags: [leases]
       summary: Get aggregate summary stats for all leases
+      parameters:
+        - name: fiscalYearStartMonth
+          in: query
+          required: false
+          description: Override the fiscal year start month (1-12) for YTD calcs. Falls back to app settings.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 12
       responses:
         "200":
           description: Summary stats
@@ -278,6 +287,25 @@ components:
         paymentFrequency:
           type: string
           enum: [monthly, quarterly, annually]
+        paymentTiming:
+          type: string
+          enum: [advance, arrears]
+          description: Whether payments are made at period-start (advance) or period-end (arrears)
+        isShortTerm:
+          type: boolean
+          description: ASC 842 short-term lease exemption (term ≤ 12 months); skips schedule generation
+        prepaidRent:
+          type: number
+          description: Added to opening ROU asset
+        initialDirectCosts:
+          type: number
+          description: Added to opening ROU asset
+        leaseIncentives:
+          type: number
+          description: Subtracted from opening ROU asset
+        openingRouAsset:
+          type: number
+          description: Computed = presentValue + prepaidRent + initialDirectCosts − leaseIncentives
         status:
           type: string
           enum: [draft, active, expired]
@@ -340,6 +368,20 @@ components:
         paymentFrequency:
           type: string
           enum: [monthly, quarterly, annually]
+        paymentTiming:
+          type: string
+          enum: [advance, arrears]
+        isShortTerm:
+          type: boolean
+        prepaidRent:
+          type: number
+          minimum: 0
+        initialDirectCosts:
+          type: number
+          minimum: 0
+        leaseIncentives:
+          type: number
+          minimum: 0
 
     LeaseUpdate:
       type: object
@@ -380,6 +422,20 @@ components:
         paymentFrequency:
           type: string
           enum: [monthly, quarterly, annually]
+        paymentTiming:
+          type: string
+          enum: [advance, arrears]
+        isShortTerm:
+          type: boolean
+        prepaidRent:
+          type: number
+          minimum: 0
+        initialDirectCosts:
+          type: number
+          minimum: 0
+        leaseIncentives:
+          type: number
+          minimum: 0
         status:
           type: string
           enum: [draft, active, expired]
@@ -433,6 +489,19 @@ components:
         paymentFrequency:
           type: string
           enum: [monthly, quarterly, annually]
+        paymentTiming:
+          type: string
+          enum: [advance, arrears]
+        isShortTerm:
+          type: boolean
+        prepaidRent:
+          type: number
+        initialDirectCosts:
+          type: number
+        leaseIncentives:
+          type: number
+        openingRouAsset:
+          type: number
         status:
           type: string
           enum: [draft, active, expired]

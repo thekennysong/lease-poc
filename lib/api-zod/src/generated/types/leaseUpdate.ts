@@ -7,6 +7,7 @@
  */
 import type { LeaseUpdateLeaseClassification } from "./leaseUpdateLeaseClassification";
 import type { LeaseUpdatePaymentFrequency } from "./leaseUpdatePaymentFrequency";
+import type { LeaseUpdatePaymentTiming } from "./leaseUpdatePaymentTiming";
 import type { LeaseUpdateStatus } from "./leaseUpdateStatus";
 
 export interface LeaseUpdate {
@@ -29,5 +30,13 @@ export interface LeaseUpdate {
   amortizationExpenseAccount?: string;
   cashAccount?: string;
   paymentFrequency?: LeaseUpdatePaymentFrequency;
+  paymentTiming?: LeaseUpdatePaymentTiming;
+  isShortTerm?: boolean;
+  /** @minimum 0 */
+  prepaidRent?: number;
+  /** @minimum 0 */
+  initialDirectCosts?: number;
+  /** @minimum 0 */
+  leaseIncentives?: number;
   status?: LeaseUpdateStatus;
 }

@@ -7,6 +7,7 @@
  */
 import type { LeaseLeaseClassification } from "./leaseLeaseClassification";
 import type { LeasePaymentFrequency } from "./leasePaymentFrequency";
+import type { LeasePaymentTiming } from "./leasePaymentTiming";
 import type { LeaseStatus } from "./leaseStatus";
 
 export interface Lease {
@@ -32,6 +33,18 @@ export interface Lease {
   /** @nullable */
   cashAccount?: string | null;
   paymentFrequency?: LeasePaymentFrequency;
+  /** Whether payments are made at period-start (advance) or period-end (arrears) */
+  paymentTiming?: LeasePaymentTiming;
+  /** ASC 842 short-term lease exemption (term ≤ 12 months); skips schedule generation */
+  isShortTerm?: boolean;
+  /** Added to opening ROU asset */
+  prepaidRent?: number;
+  /** Added to opening ROU asset */
+  initialDirectCosts?: number;
+  /** Subtracted from opening ROU asset */
+  leaseIncentives?: number;
+  /** Computed = presentValue + prepaidRent + initialDirectCosts − leaseIncentives */
+  openingRouAsset?: number;
   status: LeaseStatus;
   /** @nullable */
   currentBalance?: number | null;

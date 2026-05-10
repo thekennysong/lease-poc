@@ -18,6 +18,7 @@ import type {
 
 import type {
   ErrorResponse,
+  GetLeasesSummaryParams,
   HealthStatus,
   Lease,
   LeaseInput,
@@ -275,41 +276,60 @@ export const useCreateLease = <
 /**
  * @summary Get aggregate summary stats for all leases
  */
-export const getGetLeasesSummaryUrl = () => {
-  return `/api/leases/summary`;
+export const getGetLeasesSummaryUrl = (params?: GetLeasesSummaryParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/leases/summary?${stringifiedParams}`
+    : `/api/leases/summary`;
 };
 
 export const getLeasesSummary = async (
+  params?: GetLeasesSummaryParams,
   options?: RequestInit,
 ): Promise<LeasesSummary> => {
-  return customFetch<LeasesSummary>(getGetLeasesSummaryUrl(), {
+  return customFetch<LeasesSummary>(getGetLeasesSummaryUrl(params), {
     ...options,
     method: "GET",
   });
 };
 
-export const getGetLeasesSummaryQueryKey = () => {
-  return [`/api/leases/summary`] as const;
+export const getGetLeasesSummaryQueryKey = (
+  params?: GetLeasesSummaryParams,
+) => {
+  return [`/api/leases/summary`, ...(params ? [params] : [])] as const;
 };
 
 export const getGetLeasesSummaryQueryOptions = <
   TData = Awaited<ReturnType<typeof getLeasesSummary>>,
   TError = ErrorType<unknown>,
->(options?: {
-  query?: UseQueryOptions<
-    Awaited<ReturnType<typeof getLeasesSummary>>,
-    TError,
-    TData
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}) => {
+>(
+  params?: GetLeasesSummaryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getLeasesSummary>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
-  const queryKey = queryOptions?.queryKey ?? getGetLeasesSummaryQueryKey();
+  const queryKey =
+    queryOptions?.queryKey ?? getGetLeasesSummaryQueryKey(params);
 
   const queryFn: QueryFunction<
     Awaited<ReturnType<typeof getLeasesSummary>>
-  > = ({ signal }) => getLeasesSummary({ signal, ...requestOptions });
+  > = ({ signal }) => getLeasesSummary(params, { signal, ...requestOptions });
 
   return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
     Awaited<ReturnType<typeof getLeasesSummary>>,
@@ -330,15 +350,18 @@ export type GetLeasesSummaryQueryError = ErrorType<unknown>;
 export function useGetLeasesSummary<
   TData = Awaited<ReturnType<typeof getLeasesSummary>>,
   TError = ErrorType<unknown>,
->(options?: {
-  query?: UseQueryOptions<
-    Awaited<ReturnType<typeof getLeasesSummary>>,
-    TError,
-    TData
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-  const queryOptions = getGetLeasesSummaryQueryOptions(options);
+>(
+  params?: GetLeasesSummaryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getLeasesSummary>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetLeasesSummaryQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

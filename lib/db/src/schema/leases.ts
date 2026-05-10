@@ -6,6 +6,7 @@ import {
   numeric,
   date,
   timestamp,
+  boolean,
   pgEnum,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
@@ -33,6 +34,11 @@ export const leaseClassificationEnum = pgEnum("lease_classification", [
   "finance",
 ]);
 
+export const paymentTimingEnum = pgEnum("payment_timing", [
+  "advance",
+  "arrears",
+]);
+
 export const leasesTable = pgTable("leases", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -49,6 +55,11 @@ export const leasesTable = pgTable("leases", {
   cashAccount: text("cash_account"),
   paymentFrequency: paymentFrequencyEnum("payment_frequency").notNull().default("monthly"),
   leaseClassification: leaseClassificationEnum("lease_classification").notNull().default("operating"),
+  paymentTiming: paymentTimingEnum("payment_timing").notNull().default("arrears"),
+  isShortTerm: boolean("is_short_term").notNull().default(false),
+  prepaidRent: numeric("prepaid_rent", { precision: 15, scale: 2 }).notNull().default("0"),
+  initialDirectCosts: numeric("initial_direct_costs", { precision: 15, scale: 2 }).notNull().default("0"),
+  leaseIncentives: numeric("lease_incentives", { precision: 15, scale: 2 }).notNull().default("0"),
   status: leaseStatusEnum("status").notNull().default("draft"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
@@ -68,6 +79,16 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   status: scheduleStatusEnum("status").notNull().default("draft"),
 });
 
+/**
+ * Singleton settings row (always id=1). Stores tenant-wide preferences such as
+ * fiscal year start month for YTD calculations.
+ */
+export const appSettingsTable = pgTable("app_settings", {
+  id: serial("id").primaryKey(),
+  fiscalYearStartMonth: integer("fiscal_year_start_month").notNull().default(1),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
 export const insertLeaseSchema = createInsertSchema(leasesTable).omit({
   id: true,
   createdAt: true,
@@ -81,3 +102,5 @@ export const insertScheduleEntrySchema = createInsertSchema(scheduleEntriesTable
 });
 export type InsertScheduleEntry = z.infer<typeof insertScheduleEntrySchema>;
 export type ScheduleEntry = typeof scheduleEntriesTable.$inferSelect;
+
+export type AppSettings = typeof appSettingsTable.$inferSelect;

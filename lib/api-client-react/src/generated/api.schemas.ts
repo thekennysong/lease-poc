@@ -33,6 +33,17 @@ export const LeasePaymentFrequency = {
   annually: "annually",
 } as const;
 
+/**
+ * Whether payments are made at period-start (advance) or period-end (arrears)
+ */
+export type LeasePaymentTiming =
+  (typeof LeasePaymentTiming)[keyof typeof LeasePaymentTiming];
+
+export const LeasePaymentTiming = {
+  advance: "advance",
+  arrears: "arrears",
+} as const;
+
 export type LeaseStatus = (typeof LeaseStatus)[keyof typeof LeaseStatus];
 
 export const LeaseStatus = {
@@ -64,6 +75,18 @@ export interface Lease {
   /** @nullable */
   cashAccount?: string | null;
   paymentFrequency?: LeasePaymentFrequency;
+  /** Whether payments are made at period-start (advance) or period-end (arrears) */
+  paymentTiming?: LeasePaymentTiming;
+  /** ASC 842 short-term lease exemption (term ≤ 12 months); skips schedule generation */
+  isShortTerm?: boolean;
+  /** Added to opening ROU asset */
+  prepaidRent?: number;
+  /** Added to opening ROU asset */
+  initialDirectCosts?: number;
+  /** Subtracted from opening ROU asset */
+  leaseIncentives?: number;
+  /** Computed = presentValue + prepaidRent + initialDirectCosts − leaseIncentives */
+  openingRouAsset?: number;
   status: LeaseStatus;
   /** @nullable */
   currentBalance?: number | null;
@@ -91,6 +114,14 @@ export const LeaseInputPaymentFrequency = {
   annually: "annually",
 } as const;
 
+export type LeaseInputPaymentTiming =
+  (typeof LeaseInputPaymentTiming)[keyof typeof LeaseInputPaymentTiming];
+
+export const LeaseInputPaymentTiming = {
+  advance: "advance",
+  arrears: "arrears",
+} as const;
+
 export interface LeaseInput {
   /** @minLength 1 */
   name: string;
@@ -112,6 +143,14 @@ export interface LeaseInput {
   amortizationExpenseAccount?: string;
   cashAccount?: string;
   paymentFrequency?: LeaseInputPaymentFrequency;
+  paymentTiming?: LeaseInputPaymentTiming;
+  isShortTerm?: boolean;
+  /** @minimum 0 */
+  prepaidRent?: number;
+  /** @minimum 0 */
+  initialDirectCosts?: number;
+  /** @minimum 0 */
+  leaseIncentives?: number;
 }
 
 export type LeaseUpdateLeaseClassification =
@@ -129,6 +168,14 @@ export const LeaseUpdatePaymentFrequency = {
   monthly: "monthly",
   quarterly: "quarterly",
   annually: "annually",
+} as const;
+
+export type LeaseUpdatePaymentTiming =
+  (typeof LeaseUpdatePaymentTiming)[keyof typeof LeaseUpdatePaymentTiming];
+
+export const LeaseUpdatePaymentTiming = {
+  advance: "advance",
+  arrears: "arrears",
 } as const;
 
 export type LeaseUpdateStatus =
@@ -160,6 +207,14 @@ export interface LeaseUpdate {
   amortizationExpenseAccount?: string;
   cashAccount?: string;
   paymentFrequency?: LeaseUpdatePaymentFrequency;
+  paymentTiming?: LeaseUpdatePaymentTiming;
+  isShortTerm?: boolean;
+  /** @minimum 0 */
+  prepaidRent?: number;
+  /** @minimum 0 */
+  initialDirectCosts?: number;
+  /** @minimum 0 */
+  leaseIncentives?: number;
   status?: LeaseUpdateStatus;
 }
 
@@ -178,6 +233,14 @@ export const LeaseWithSchedulePaymentFrequency = {
   monthly: "monthly",
   quarterly: "quarterly",
   annually: "annually",
+} as const;
+
+export type LeaseWithSchedulePaymentTiming =
+  (typeof LeaseWithSchedulePaymentTiming)[keyof typeof LeaseWithSchedulePaymentTiming];
+
+export const LeaseWithSchedulePaymentTiming = {
+  advance: "advance",
+  arrears: "arrears",
 } as const;
 
 export type LeaseWithScheduleStatus =
@@ -232,6 +295,12 @@ export interface LeaseWithSchedule {
   /** @nullable */
   cashAccount?: string | null;
   paymentFrequency?: LeaseWithSchedulePaymentFrequency;
+  paymentTiming?: LeaseWithSchedulePaymentTiming;
+  isShortTerm?: boolean;
+  prepaidRent?: number;
+  initialDirectCosts?: number;
+  leaseIncentives?: number;
+  openingRouAsset?: number;
   status: LeaseWithScheduleStatus;
   /** @nullable */
   currentBalance?: number | null;
@@ -256,3 +325,12 @@ export interface LeasesSummary {
   interestExpenseYtd: number;
   outstandingLeaseLiability: number;
 }
+
+export type GetLeasesSummaryParams = {
+  /**
+   * Override the fiscal year start month (1-12) for YTD calcs. Falls back to app settings.
+   * @minimum 1
+   * @maximum 12
+   */
+  fiscalYearStartMonth?: number;
+};

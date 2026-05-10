@@ -40,6 +40,33 @@ export const ListLeasesResponseItem = zod.object({
   amortizationExpenseAccount: zod.string().nullish(),
   cashAccount: zod.string().nullish(),
   paymentFrequency: zod.enum(["monthly", "quarterly", "annually"]).optional(),
+  paymentTiming: zod
+    .enum(["advance", "arrears"])
+    .optional()
+    .describe(
+      "Whether payments are made at period-start (advance) or period-end (arrears)",
+    ),
+  isShortTerm: zod
+    .boolean()
+    .optional()
+    .describe(
+      "ASC 842 short-term lease exemption (term ≤ 12 months); skips schedule generation",
+    ),
+  prepaidRent: zod.number().optional().describe("Added to opening ROU asset"),
+  initialDirectCosts: zod
+    .number()
+    .optional()
+    .describe("Added to opening ROU asset"),
+  leaseIncentives: zod
+    .number()
+    .optional()
+    .describe("Subtracted from opening ROU asset"),
+  openingRouAsset: zod
+    .number()
+    .optional()
+    .describe(
+      "Computed = presentValue + prepaidRent + initialDirectCosts − leaseIncentives",
+    ),
   status: zod.enum(["draft", "active", "expired"]),
   currentBalance: zod.number().nullish(),
   nextPayment: zod.number().nullish(),
@@ -58,6 +85,12 @@ export const createLeaseBodyPresentValueMin = 0;
 
 export const createLeaseBodyBorrowingRateMin = 0;
 
+export const createLeaseBodyPrepaidRentMin = 0;
+
+export const createLeaseBodyInitialDirectCostsMin = 0;
+
+export const createLeaseBodyLeaseIncentivesMin = 0;
+
 export const CreateLeaseBody = zod.object({
   name: zod.string().min(1),
   lessor: zod.string().min(1),
@@ -73,11 +106,35 @@ export const CreateLeaseBody = zod.object({
   amortizationExpenseAccount: zod.string().optional(),
   cashAccount: zod.string().optional(),
   paymentFrequency: zod.enum(["monthly", "quarterly", "annually"]).optional(),
+  paymentTiming: zod.enum(["advance", "arrears"]).optional(),
+  isShortTerm: zod.boolean().optional(),
+  prepaidRent: zod.number().min(createLeaseBodyPrepaidRentMin).optional(),
+  initialDirectCosts: zod
+    .number()
+    .min(createLeaseBodyInitialDirectCostsMin)
+    .optional(),
+  leaseIncentives: zod
+    .number()
+    .min(createLeaseBodyLeaseIncentivesMin)
+    .optional(),
 });
 
 /**
  * @summary Get aggregate summary stats for all leases
  */
+export const getLeasesSummaryQueryFiscalYearStartMonthMax = 12;
+
+export const GetLeasesSummaryQueryParams = zod.object({
+  fiscalYearStartMonth: zod.coerce
+    .number()
+    .min(1)
+    .max(getLeasesSummaryQueryFiscalYearStartMonthMax)
+    .optional()
+    .describe(
+      "Override the fiscal year start month (1-12) for YTD calcs. Falls back to app settings.",
+    ),
+});
+
 export const GetLeasesSummaryResponse = zod.object({
   activeLeases: zod.number(),
   interestExpenseYtd: zod.number(),
@@ -107,6 +164,12 @@ export const GetLeaseResponse = zod.object({
   amortizationExpenseAccount: zod.string().nullish(),
   cashAccount: zod.string().nullish(),
   paymentFrequency: zod.enum(["monthly", "quarterly", "annually"]).optional(),
+  paymentTiming: zod.enum(["advance", "arrears"]).optional(),
+  isShortTerm: zod.boolean().optional(),
+  prepaidRent: zod.number().optional(),
+  initialDirectCosts: zod.number().optional(),
+  leaseIncentives: zod.number().optional(),
+  openingRouAsset: zod.number().optional(),
   status: zod.enum(["draft", "active", "expired"]),
   currentBalance: zod.number().nullish(),
   nextPayment: zod.number().nullish(),
@@ -142,6 +205,12 @@ export const updateLeaseBodyPresentValueMin = 0;
 
 export const updateLeaseBodyBorrowingRateMin = 0;
 
+export const updateLeaseBodyPrepaidRentMin = 0;
+
+export const updateLeaseBodyInitialDirectCostsMin = 0;
+
+export const updateLeaseBodyLeaseIncentivesMin = 0;
+
 export const UpdateLeaseBody = zod.object({
   name: zod.string().min(1).optional(),
   lessor: zod.string().optional(),
@@ -157,6 +226,17 @@ export const UpdateLeaseBody = zod.object({
   amortizationExpenseAccount: zod.string().optional(),
   cashAccount: zod.string().optional(),
   paymentFrequency: zod.enum(["monthly", "quarterly", "annually"]).optional(),
+  paymentTiming: zod.enum(["advance", "arrears"]).optional(),
+  isShortTerm: zod.boolean().optional(),
+  prepaidRent: zod.number().min(updateLeaseBodyPrepaidRentMin).optional(),
+  initialDirectCosts: zod
+    .number()
+    .min(updateLeaseBodyInitialDirectCostsMin)
+    .optional(),
+  leaseIncentives: zod
+    .number()
+    .min(updateLeaseBodyLeaseIncentivesMin)
+    .optional(),
   status: zod.enum(["draft", "active", "expired"]).optional(),
 });
 
@@ -182,6 +262,33 @@ export const UpdateLeaseResponse = zod.object({
   amortizationExpenseAccount: zod.string().nullish(),
   cashAccount: zod.string().nullish(),
   paymentFrequency: zod.enum(["monthly", "quarterly", "annually"]).optional(),
+  paymentTiming: zod
+    .enum(["advance", "arrears"])
+    .optional()
+    .describe(
+      "Whether payments are made at period-start (advance) or period-end (arrears)",
+    ),
+  isShortTerm: zod
+    .boolean()
+    .optional()
+    .describe(
+      "ASC 842 short-term lease exemption (term ≤ 12 months); skips schedule generation",
+    ),
+  prepaidRent: zod.number().optional().describe("Added to opening ROU asset"),
+  initialDirectCosts: zod
+    .number()
+    .optional()
+    .describe("Added to opening ROU asset"),
+  leaseIncentives: zod
+    .number()
+    .optional()
+    .describe("Subtracted from opening ROU asset"),
+  openingRouAsset: zod
+    .number()
+    .optional()
+    .describe(
+      "Computed = presentValue + prepaidRent + initialDirectCosts − leaseIncentives",
+    ),
   status: zod.enum(["draft", "active", "expired"]),
   currentBalance: zod.number().nullish(),
   nextPayment: zod.number().nullish(),

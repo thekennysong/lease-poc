@@ -8,6 +8,7 @@ import {
   timestamp,
   boolean,
   pgEnum,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -78,6 +79,44 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   rouAmortization: numeric("rou_amortization", { precision: 15, scale: 2 }).notNull(),
   status: scheduleStatusEnum("status").notNull().default("draft"),
 });
+
+export const journalEntryStatusEnum = pgEnum("journal_entry_status", [
+  "posted",
+  "reversed",
+]);
+
+/**
+ * One journal entry per posted (or reversed) period. Multiple JEs can exist for
+ * the same scheduleEntry across post→unpost→repost cycles, but only one will
+ * have status="posted" at any time. The reversal of an entry is itself a new
+ * "posted" JE with offsetting debits/credits, while the original is flipped to
+ * "reversed".
+ */
+export const journalEntriesTable = pgTable("journal_entries", {
+  id: serial("id").primaryKey(),
+  leaseId: integer("lease_id").notNull().references(() => leasesTable.id, { onDelete: "cascade" }),
+  scheduleEntryId: integer("schedule_entry_id").notNull().references(() => scheduleEntriesTable.id, { onDelete: "cascade" }),
+  period: text("period").notNull(), // YYYY-MM
+  postedAt: timestamp("posted_at", { withTimezone: true }).notNull().defaultNow(),
+  status: journalEntryStatusEnum("status").notNull().default("posted"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  reversesEntryId: integer("reverses_entry_id").references((): any => journalEntriesTable.id, { onDelete: "set null" }),
+  memo: text("memo"),
+}, (t) => ({
+  idempotencyKeyIdx: uniqueIndex("journal_entries_idempotency_key_idx").on(t.idempotencyKey),
+}));
+
+export const journalEntryLinesTable = pgTable("journal_entry_lines", {
+  id: serial("id").primaryKey(),
+  journalEntryId: integer("journal_entry_id").notNull().references(() => journalEntriesTable.id, { onDelete: "cascade" }),
+  accountCode: text("account_code").notNull(),
+  debit: numeric("debit", { precision: 15, scale: 2 }).notNull().default("0"),
+  credit: numeric("credit", { precision: 15, scale: 2 }).notNull().default("0"),
+  memo: text("memo"),
+});
+
+export type JournalEntry = typeof journalEntriesTable.$inferSelect;
+export type JournalEntryLine = typeof journalEntryLinesTable.$inferSelect;
 
 /**
  * Singleton settings row (always id=1). Stores tenant-wide preferences such as

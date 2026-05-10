@@ -24,12 +24,13 @@ A month-end close lease capitalization app for finance teams. Manages ASC 842 / 
 
 ## Where things live
 
-- DB schema: `lib/db/src/schema/leases.ts` (includes `appSettingsTable` singleton)
+- DB schema: `lib/db/src/schema/leases.ts` (includes `appSettingsTable` singleton, `journalEntriesTable`, `journalEntryLinesTable`)
 - API contract: `lib/api-spec/openapi.yaml`
 - Generated hooks: `lib/api-client-react/src/generated/api.ts`
 - Generated Zod schemas: `lib/api-zod/src/generated/api.ts`
 - API routes: `artifacts/api-server/src/routes/leases.ts`
 - Amortization logic: `artifacts/api-server/src/lib/amortization.ts`
+- Journal-entry generation: `artifacts/api-server/src/lib/journal.ts`
 - Frontend pages: `artifacts/lease-app/src/pages/`
 
 ## Architecture decisions
@@ -49,6 +50,14 @@ A month-end close lease capitalization app for finance teams. Manages ASC 842 / 
 - Fiscal-year YTD — `appSettingsTable` is a single-row table with `fiscalYearStartMonth` (default 1 = January). `GET /leases/summary` accepts `?fiscalYearStartMonth=N` (1-12) to override; otherwise reads the settings row, otherwise defaults to 1. The YTD window is computed by `fiscalYearWindow(now, startMonth)` which rolls back to the prior calendar year when `now` is before the start month.
 - N+1 fix in `/leases/summary` — outstanding liability is computed with a single `SELECT DISTINCT ON (lease_id) ...` raw SQL query that returns the latest posted ending balance per lease, then joined in-memory against the leases list. Short-term leases are skipped. The YTD interest query also INNER JOINs `leases` and filters `isShortTerm = false`.
 - Toggling `isShortTerm` on PUT wipes **all** schedule rows for that lease (posted included) before regenerating, because the election fundamentally changes whether a schedule should exist. Other regeneration triggers (payment, rate, term, etc.) only clear drafts. Short-term eligibility (`termMonths ≤ 12`) is validated against the merged current+incoming state **before** the UPDATE runs, so an invalid combination is never persisted.
+- Journal entries — `POST /leases/:id/schedule/post` flips draft schedule rows to "posted" **and** generates a balanced JE per period inside a single DB transaction. Lines are built by `buildJournalLines(classification, amounts, accounts, period)` in `lib/journal.ts`:
+  - **Finance:** Dr Interest Expense (interest), Dr Amortization Expense (rouAmort), Dr Lease Liability (principal), Cr ROU Asset (rouAmort), Cr Cash (payment).
+  - **Operating:** Dr Lease Expense (interest + rouAmort, posted to `amortizationExpenseAccount`), Dr Lease Liability (principal), Cr ROU Asset (rouAmort, the plug), Cr Cash (payment).
+  - `assertBalanced()` enforces Dr = Cr (within $0.01 rounding) before insert.
+  - Missing GL accounts on the lease fall back to placeholder codes like `UNASSIGNED-INTEREST_EXPENSE` so balanced JEs are still produced.
+- JE idempotency — the schedule entry's `status="draft"` filter on the outer post query IS the idempotency guard. We do **not** also check for an existing posted JE on a scheduleEntry, because reversal JEs themselves carry `status="posted"` and would wrongly suppress re-posting after an unpost cycle. Each new JE gets a unique key `lease-{id}-period-{n}-v{count+1}` (or `-rev-v{count+1}` for reversals) where `count` is the total prior JEs for that scheduleEntry.
+- Unpost — `POST /leases/:id/schedule/unpost/:periodNumber` finds the latest posted JE for that period, marks it `status="reversed"`, inserts a new offsetting JE (`status="posted"`, debits/credits flipped, `reversesEntryId` set), and flips the schedule row back to "draft". Returns 400 if the period isn't currently posted. All in a single transaction.
+- `GET /leases/:id/journal-entries` returns all JEs (posted + reversed) ordered by `postedAt asc`, each with their lines fetched via a single `inArray` query (no N+1).
 - Orval generates `z.coerce.date()` for OpenAPI `format: date` fields. Route handlers must call `toDateStr(d)` before inserting into Drizzle `date` columns (which expect `"YYYY-MM-DD"` strings).
 - API errors are wrapped in `ApiError<T>` from `custom-fetch`. Access the server error message via `err.data?.error`, not `err.error`.
 
@@ -56,8 +65,9 @@ A month-end close lease capitalization app for finance teams. Manages ASC 842 / 
 
 - Leases list with summary stat cards (active count, YTD interest, outstanding lease liability)
 - Add/edit lease modal with live amortization schedule preview before saving
-- Lease detail page with full schedule, draft/posted status per period
-- Post payments through a selected period (marks draft → posted)
+- Lease detail page with tabs: Amortization Schedule (with per-row Unpost button on posted periods) + Journal Entries (groups Dr/Cr lines per JE, shows reversal links)
+- Post payments through a selected period — generates balanced journal entries per period
+- Reverse a single posted period — creates an offsetting "posted" JE, marks original "reversed", flips schedule row back to draft
 - Delete lease action
 
 ## User preferences

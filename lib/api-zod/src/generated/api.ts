@@ -326,6 +326,10 @@ export const GetLeaseScheduleResponseItem = zod.object({
 export const GetLeaseScheduleResponse = zod.array(GetLeaseScheduleResponseItem);
 
 /**
+ * Flips draft schedule entries through `throughPeriod` to "posted" and
+generates a balanced journal entry per period. Idempotent — already
+posted periods are skipped, not duplicated.
+
  * @summary Post (approve) payments for a lease through a given period
  */
 export const PostLeasePaymentsParams = zod.object({
@@ -354,4 +358,71 @@ export const PostLeasePaymentsResponseItem = zod.object({
 });
 export const PostLeasePaymentsResponse = zod.array(
   PostLeasePaymentsResponseItem,
+);
+
+/**
+ * Marks the posted JE for that period as "reversed", creates a new
+offsetting "posted" JE with debits/credits flipped, and flips the
+schedule entry back to "draft".
+
+ * @summary Reverse a previously posted period
+ */
+
+export const UnpostLeasePaymentParams = zod.object({
+  id: zod.coerce.number(),
+  periodNumber: zod.coerce.number().min(1),
+});
+
+export const UnpostLeasePaymentResponseItem = zod.object({
+  id: zod.number(),
+  leaseId: zod.number(),
+  periodNumber: zod.number(),
+  paymentDate: zod.coerce.date(),
+  beginningBalance: zod.number(),
+  payment: zod.number(),
+  interest: zod.number(),
+  principal: zod.number(),
+  endingBalance: zod.number(),
+  rouAmortization: zod.number(),
+  status: zod.enum(["draft", "posted"]),
+});
+export const UnpostLeasePaymentResponse = zod.array(
+  UnpostLeasePaymentResponseItem,
+);
+
+/**
+ * @summary List all journal entries (posted and reversed) for a lease
+ */
+export const GetLeaseJournalEntriesParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const GetLeaseJournalEntriesResponseItem = zod.object({
+  id: zod.number(),
+  leaseId: zod.number(),
+  scheduleEntryId: zod.number(),
+  period: zod.string().describe("YYYY-MM period label"),
+  postedAt: zod.coerce.date(),
+  status: zod.enum(["posted", "reversed"]),
+  idempotencyKey: zod.string(),
+  reversesEntryId: zod
+    .number()
+    .nullish()
+    .describe(
+      "When set, this JE is the offsetting reversal of that original entry",
+    ),
+  memo: zod.string().nullish(),
+  lines: zod.array(
+    zod.object({
+      id: zod.number(),
+      journalEntryId: zod.number(),
+      accountCode: zod.string(),
+      debit: zod.number(),
+      credit: zod.number(),
+      memo: zod.string().nullish(),
+    }),
+  ),
+});
+export const GetLeaseJournalEntriesResponse = zod.array(
+  GetLeaseJournalEntriesResponseItem,
 );

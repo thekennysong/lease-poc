@@ -1,13 +1,16 @@
 import { useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, ArrowLeft, Info } from "lucide-react";
-import { 
-  useGetLease, 
-  getGetLeaseQueryKey, 
+import { ChevronRight, ArrowLeft, Info, Undo2 } from "lucide-react";
+import {
+  useGetLease,
+  getGetLeaseQueryKey,
   usePostLeasePayments,
+  useUnpostLeasePayment,
+  useGetLeaseJournalEntries,
+  getGetLeaseJournalEntriesQueryKey,
   getListLeasesQueryKey,
-  getGetLeasesSummaryQueryKey
+  getGetLeasesSummaryQueryKey,
 } from "@workspace/api-client-react";
 
 import { Layout } from "@/components/Layout";
@@ -31,6 +34,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
@@ -49,24 +53,49 @@ export default function LeaseDetailPage() {
 
   const [postModalOpen, setPostModalOpen] = useState(false);
   const [throughPeriod, setThroughPeriod] = useState<number | "">("");
-  
+
   const postPayments = usePostLeasePayments();
+  const unpostPayment = useUnpostLeasePayment();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  const { data: journalEntries } = useGetLeaseJournalEntries(leaseId, {
+    query: {
+      enabled: !isNaN(leaseId),
+      queryKey: getGetLeaseJournalEntriesQueryKey(leaseId),
+    },
+  });
+
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: getGetLeaseQueryKey(leaseId) });
+    queryClient.invalidateQueries({ queryKey: getGetLeaseJournalEntriesQueryKey(leaseId) });
+    queryClient.invalidateQueries({ queryKey: getListLeasesQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetLeasesSummaryQueryKey() });
+  };
 
   const handlePost = () => {
     if (!throughPeriod) return;
     postPayments.mutate({ id: leaseId, data: { throughPeriod: Number(throughPeriod) } }, {
       onSuccess: () => {
         toast({ title: "Payments posted successfully" });
-        queryClient.invalidateQueries({ queryKey: getGetLeaseQueryKey(leaseId) });
-        queryClient.invalidateQueries({ queryKey: getListLeasesQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetLeasesSummaryQueryKey() });
+        invalidateAll();
         setPostModalOpen(false);
         setThroughPeriod("");
       },
       onError: (err) => {
         toast({ title: "Error posting payments", description: err.data?.error, variant: "destructive" });
+      }
+    });
+  };
+
+  const handleUnpost = (periodNumber: number) => {
+    unpostPayment.mutate({ id: leaseId, periodNumber }, {
+      onSuccess: () => {
+        toast({ title: `Period ${periodNumber} reversed`, description: "An offsetting journal entry has been recorded." });
+        invalidateAll();
+      },
+      onError: (err) => {
+        toast({ title: "Error reversing period", description: err.data?.error, variant: "destructive" });
       }
     });
   };
@@ -254,52 +283,153 @@ export default function LeaseDetailPage() {
             </CardContent>
           </Card>
         ) : (
-        <Card>
-          <CardHeader className="pb-3 border-b">
-            <CardTitle className="text-lg">Amortization Schedule</CardTitle>
-          </CardHeader>
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/50">
-                <TableHead className="w-12">#</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Payment Date</TableHead>
-                <TableHead className="text-right">Beg. Balance</TableHead>
-                <TableHead className="text-right">Payment</TableHead>
-                <TableHead className="text-right">Interest</TableHead>
-                <TableHead className="text-right">Principal</TableHead>
-                <TableHead className="text-right">ROU Amort.</TableHead>
-                <TableHead className="text-right pr-6">End. Balance</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {lease.schedule?.map((entry) => (
-                <TableRow key={entry.id} className={entry.status === 'posted' ? 'bg-muted/20' : ''}>
-                  <TableCell className="font-medium text-muted-foreground">{entry.periodNumber}</TableCell>
-                  <TableCell>
-                    <Badge variant={entry.status === 'posted' ? "secondary" : "outline"} className="text-[10px]">
-                      {entry.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{formatDate(entry.paymentDate)}</TableCell>
-                  <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.beginningBalance)}</TableCell>
-                  <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.payment)}</TableCell>
-                  <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.interest)}</TableCell>
-                  <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.principal)}</TableCell>
-                  <TableCell className="text-right font-mono text-sm text-muted-foreground">{formatCurrency(entry.rouAmortization)}</TableCell>
-                  <TableCell className="text-right font-mono text-sm pr-6">{formatCurrency(entry.endingBalance)}</TableCell>
-                </TableRow>
-              ))}
-              {!lease.schedule?.length && (
-                <TableRow>
-                  <TableCell colSpan={9} className="h-32 text-center text-muted-foreground">
-                    No schedule entries found.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </Card>
+        <Tabs defaultValue="schedule" className="w-full">
+          <TabsList>
+            <TabsTrigger value="schedule" data-testid="tab-schedule">Amortization Schedule</TabsTrigger>
+            <TabsTrigger value="journal" data-testid="tab-journal">
+              Journal Entries{journalEntries ? ` (${journalEntries.length})` : ""}
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="schedule" className="mt-4">
+            <Card>
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead className="w-12">#</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Payment Date</TableHead>
+                    <TableHead className="text-right">Beg. Balance</TableHead>
+                    <TableHead className="text-right">Payment</TableHead>
+                    <TableHead className="text-right">Interest</TableHead>
+                    <TableHead className="text-right">Principal</TableHead>
+                    <TableHead className="text-right">ROU Amort.</TableHead>
+                    <TableHead className="text-right">End. Balance</TableHead>
+                    <TableHead className="w-20 pr-6 text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {lease.schedule?.map((entry) => (
+                    <TableRow key={entry.id} className={entry.status === 'posted' ? 'bg-muted/20' : ''}>
+                      <TableCell className="font-medium text-muted-foreground">{entry.periodNumber}</TableCell>
+                      <TableCell>
+                        <Badge variant={entry.status === 'posted' ? "secondary" : "outline"} className="text-[10px]">
+                          {entry.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{formatDate(entry.paymentDate)}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.beginningBalance)}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.payment)}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.interest)}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.principal)}</TableCell>
+                      <TableCell className="text-right font-mono text-sm text-muted-foreground">{formatCurrency(entry.rouAmortization)}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.endingBalance)}</TableCell>
+                      <TableCell className="text-right pr-6">
+                        {entry.status === 'posted' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleUnpost(entry.periodNumber)}
+                            disabled={unpostPayment.isPending}
+                            data-testid={`button-unpost-${entry.periodNumber}`}
+                            title="Reverse this posting"
+                          >
+                            <Undo2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {!lease.schedule?.length && (
+                    <TableRow>
+                      <TableCell colSpan={10} className="h-32 text-center text-muted-foreground">
+                        No schedule entries found.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="journal" className="mt-4">
+            <Card>
+              <CardContent className="pt-6">
+                {!journalEntries?.length ? (
+                  <div className="text-center text-muted-foreground py-12 text-sm" data-testid="empty-journal">
+                    No journal entries yet. Post a payment to generate one.
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {journalEntries.map((je) => {
+                      const totalDr = je.lines.reduce((s, l) => s + l.debit, 0);
+                      const totalCr = je.lines.reduce((s, l) => s + l.credit, 0);
+                      return (
+                        <div
+                          key={je.id}
+                          className="border rounded-md overflow-hidden"
+                          data-testid={`je-${je.id}`}
+                        >
+                          <div className="flex items-center justify-between px-4 py-3 bg-muted/40 border-b">
+                            <div className="flex items-center gap-3">
+                              <span className="text-sm font-mono text-muted-foreground">JE #{je.id}</span>
+                              <span className="text-sm font-medium">{je.period}</span>
+                              <Badge
+                                variant={je.status === 'posted' ? "secondary" : "outline"}
+                                className={je.status === 'reversed' ? "border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300" : ""}
+                              >
+                                {je.status}
+                              </Badge>
+                              {je.reversesEntryId && (
+                                <span className="text-xs text-muted-foreground">
+                                  reverses JE #{je.reversesEntryId}
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs text-muted-foreground">
+                              {formatDate(je.postedAt)}
+                            </span>
+                          </div>
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Account</TableHead>
+                                <TableHead>Memo</TableHead>
+                                <TableHead className="text-right">Debit</TableHead>
+                                <TableHead className="text-right pr-6">Credit</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {je.lines.map((l) => (
+                                <TableRow key={l.id}>
+                                  <TableCell className="font-mono text-sm">{l.accountCode}</TableCell>
+                                  <TableCell className="text-sm text-muted-foreground">{l.memo ?? ""}</TableCell>
+                                  <TableCell className="text-right font-mono text-sm">
+                                    {l.debit > 0 ? formatCurrency(l.debit) : ""}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono text-sm pr-6">
+                                    {l.credit > 0 ? formatCurrency(l.credit) : ""}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                              <TableRow className="border-t-2 font-semibold">
+                                <TableCell colSpan={2} className="text-right text-xs uppercase tracking-wider text-muted-foreground">
+                                  Totals
+                                </TableCell>
+                                <TableCell className="text-right font-mono text-sm">{formatCurrency(totalDr)}</TableCell>
+                                <TableCell className="text-right font-mono text-sm pr-6">{formatCurrency(totalCr)}</TableCell>
+                              </TableRow>
+                            </TableBody>
+                          </Table>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
         )}
       </div>
 

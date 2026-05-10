@@ -20,6 +20,7 @@ import type {
   ErrorResponse,
   GetLeasesSummaryParams,
   HealthStatus,
+  JournalEntry,
   Lease,
   LeaseInput,
   LeaseUpdate,
@@ -714,6 +715,10 @@ export function useGetLeaseSchedule<
 }
 
 /**
+ * Flips draft schedule entries through `throughPeriod` to "posted" and
+generates a balanced journal entry per period. Idempotent — already
+posted periods are skipped, not duplicated.
+
  * @summary Post (approve) payments for a lease through a given period
  */
 export const getPostLeasePaymentsUrl = (id: number) => {
@@ -799,3 +804,183 @@ export const usePostLeasePayments = <
 > => {
   return useMutation(getPostLeasePaymentsMutationOptions(options));
 };
+
+/**
+ * Marks the posted JE for that period as "reversed", creates a new
+offsetting "posted" JE with debits/credits flipped, and flips the
+schedule entry back to "draft".
+
+ * @summary Reverse a previously posted period
+ */
+export const getUnpostLeasePaymentUrl = (id: number, periodNumber: number) => {
+  return `/api/leases/${id}/schedule/unpost/${periodNumber}`;
+};
+
+export const unpostLeasePayment = async (
+  id: number,
+  periodNumber: number,
+  options?: RequestInit,
+): Promise<ScheduleEntry[]> => {
+  return customFetch<ScheduleEntry[]>(
+    getUnpostLeasePaymentUrl(id, periodNumber),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getUnpostLeasePaymentMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof unpostLeasePayment>>,
+    TError,
+    { id: number; periodNumber: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof unpostLeasePayment>>,
+  TError,
+  { id: number; periodNumber: number },
+  TContext
+> => {
+  const mutationKey = ["unpostLeasePayment"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof unpostLeasePayment>>,
+    { id: number; periodNumber: number }
+  > = (props) => {
+    const { id, periodNumber } = props ?? {};
+
+    return unpostLeasePayment(id, periodNumber, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UnpostLeasePaymentMutationResult = NonNullable<
+  Awaited<ReturnType<typeof unpostLeasePayment>>
+>;
+
+export type UnpostLeasePaymentMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Reverse a previously posted period
+ */
+export const useUnpostLeasePayment = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof unpostLeasePayment>>,
+    TError,
+    { id: number; periodNumber: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof unpostLeasePayment>>,
+  TError,
+  { id: number; periodNumber: number },
+  TContext
+> => {
+  return useMutation(getUnpostLeasePaymentMutationOptions(options));
+};
+
+/**
+ * @summary List all journal entries (posted and reversed) for a lease
+ */
+export const getGetLeaseJournalEntriesUrl = (id: number) => {
+  return `/api/leases/${id}/journal-entries`;
+};
+
+export const getLeaseJournalEntries = async (
+  id: number,
+  options?: RequestInit,
+): Promise<JournalEntry[]> => {
+  return customFetch<JournalEntry[]>(getGetLeaseJournalEntriesUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetLeaseJournalEntriesQueryKey = (id: number) => {
+  return [`/api/leases/${id}/journal-entries`] as const;
+};
+
+export const getGetLeaseJournalEntriesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getLeaseJournalEntries>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getLeaseJournalEntries>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetLeaseJournalEntriesQueryKey(id);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getLeaseJournalEntries>>
+  > = ({ signal }) => getLeaseJournalEntries(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getLeaseJournalEntries>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetLeaseJournalEntriesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getLeaseJournalEntries>>
+>;
+export type GetLeaseJournalEntriesQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary List all journal entries (posted and reversed) for a lease
+ */
+
+export function useGetLeaseJournalEntries<
+  TData = Awaited<ReturnType<typeof getLeaseJournalEntries>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getLeaseJournalEntries>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetLeaseJournalEntriesQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}

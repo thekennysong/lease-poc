@@ -191,6 +191,10 @@ paths:
       operationId: postLeasePayments
       tags: [leases]
       summary: Post (approve) payments for a lease through a given period
+      description: |
+        Flips draft schedule entries through `throughPeriod` to "posted" and
+        generates a balanced journal entry per period. Idempotent — already
+        posted periods are skipped, not duplicated.
       parameters:
         - name: id
           in: path
@@ -214,6 +218,76 @@ paths:
                   $ref: "#/components/schemas/ScheduleEntry"
         "404":
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /leases/{id}/schedule/unpost/{periodNumber}:
+    post:
+      operationId: unpostLeasePayment
+      tags: [leases]
+      summary: Reverse a previously posted period
+      description: |
+        Marks the posted JE for that period as "reversed", creates a new
+        offsetting "posted" JE with debits/credits flipped, and flips the
+        schedule entry back to "draft".
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: periodNumber
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Updated schedule entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScheduleEntry"
+        "400":
+          description: Period is not currently posted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Lease or period not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /leases/{id}/journal-entries:
+    get:
+      operationId: getLeaseJournalEntries
+      tags: [leases]
+      summary: List all journal entries (posted and reversed) for a lease
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Journal entries with their lines, ordered by postedAt asc
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/JournalEntry"
+        "404":
+          description: Lease not found
           content:
             application/json:
               schema:
@@ -569,6 +643,67 @@ components:
           type: integer
           minimum: 1
           description: Post all draft payments up through this period number
+
+    JournalEntryLine:
+      type: object
+      required:
+        - id
+        - journalEntryId
+        - accountCode
+        - debit
+        - credit
+      properties:
+        id:
+          type: integer
+        journalEntryId:
+          type: integer
+        accountCode:
+          type: string
+        debit:
+          type: number
+        credit:
+          type: number
+        memo:
+          type: ["string", "null"]
+
+    JournalEntry:
+      type: object
+      required:
+        - id
+        - leaseId
+        - scheduleEntryId
+        - period
+        - postedAt
+        - status
+        - idempotencyKey
+        - lines
+      properties:
+        id:
+          type: integer
+        leaseId:
+          type: integer
+        scheduleEntryId:
+          type: integer
+        period:
+          type: string
+          description: YYYY-MM period label
+        postedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [posted, reversed]
+        idempotencyKey:
+          type: string
+        reversesEntryId:
+          type: ["integer", "null"]
+          description: When set, this JE is the offsetting reversal of that original entry
+        memo:
+          type: ["string", "null"]
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/JournalEntryLine"
 
     LeasesSummary:
       type: object

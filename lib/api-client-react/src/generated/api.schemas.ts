@@ -320,6 +320,43 @@ export interface PostPaymentsInput {
   throughPeriod: number;
 }
 
+export interface JournalEntryLine {
+  id: number;
+  journalEntryId: number;
+  accountCode: string;
+  debit: number;
+  credit: number;
+  /** @nullable */
+  memo?: string | null;
+}
+
+export type JournalEntryStatus =
+  (typeof JournalEntryStatus)[keyof typeof JournalEntryStatus];
+
+export const JournalEntryStatus = {
+  posted: "posted",
+  reversed: "reversed",
+} as const;
+
+export interface JournalEntry {
+  id: number;
+  leaseId: number;
+  scheduleEntryId: number;
+  /** YYYY-MM period label */
+  period: string;
+  postedAt: string;
+  status: JournalEntryStatus;
+  idempotencyKey: string;
+  /**
+   * When set, this JE is the offsetting reversal of that original entry
+   * @nullable
+   */
+  reversesEntryId?: number | null;
+  /** @nullable */
+  memo?: string | null;
+  lines: JournalEntryLine[];
+}
+
 export interface LeasesSummary {
   activeLeases: number;
   interestExpenseYtd: number;

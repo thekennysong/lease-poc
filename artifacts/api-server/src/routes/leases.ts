@@ -1,6 +1,13 @@
 import { Router, type IRouter } from "express";
-import { eq, and, lte, gte, sql } from "drizzle-orm";
-import { db, leasesTable, scheduleEntriesTable, appSettingsTable } from "@workspace/db";
+import { eq, and, lte, gte, asc, sql, inArray } from "drizzle-orm";
+import {
+  db,
+  leasesTable,
+  scheduleEntriesTable,
+  appSettingsTable,
+  journalEntriesTable,
+  journalEntryLinesTable,
+} from "@workspace/db";
 import {
   CreateLeaseBody,
   UpdateLeaseBody,
@@ -10,6 +17,8 @@ import {
   GetLeaseScheduleParams,
   PostLeasePaymentsParams,
   PostLeasePaymentsBody,
+  UnpostLeasePaymentParams,
+  GetLeaseJournalEntriesParams,
   GetLeasesSummaryQueryParams,
 } from "@workspace/api-zod";
 import {
@@ -19,6 +28,12 @@ import {
   type LeaseClassification,
   type PaymentTiming,
 } from "../lib/amortization";
+import {
+  buildJournalLines,
+  reverseLines,
+  assertBalanced,
+  periodLabelFromDate,
+} from "../lib/journal";
 
 const router: IRouter = Router();
 
@@ -505,7 +520,34 @@ router.get("/leases/:id/schedule", async (req, res): Promise<void> => {
   );
 });
 
-// POST /leases/:id/schedule/post
+function mapScheduleEntry(e: typeof scheduleEntriesTable.$inferSelect) {
+  return {
+    id: e.id,
+    leaseId: e.leaseId,
+    periodNumber: e.periodNumber,
+    paymentDate: e.paymentDate,
+    beginningBalance: toNumber(e.beginningBalance),
+    payment: toNumber(e.payment),
+    interest: toNumber(e.interest),
+    principal: toNumber(e.principal),
+    endingBalance: toNumber(e.endingBalance),
+    rouAmortization: toNumber(e.rouAmortization),
+    status: e.status,
+  };
+}
+
+async function returnSchedule(res: import("express").Response, leaseId: number): Promise<void> {
+  const entries = await db
+    .select()
+    .from(scheduleEntriesTable)
+    .where(eq(scheduleEntriesTable.leaseId, leaseId))
+    .orderBy(scheduleEntriesTable.periodNumber);
+  res.json(entries.map(mapScheduleEntry));
+}
+
+// POST /leases/:id/schedule/post — flips draft entries → posted, generates a
+// balanced journal entry per newly posted period. Idempotent: any period that
+// already has a status="posted" JE is left untouched.
 router.post("/leases/:id/schedule/post", async (req, res): Promise<void> => {
   const params = PostLeasePaymentsParams.safeParse(req.params);
   if (!params.success) {
@@ -519,42 +561,294 @@ router.post("/leases/:id/schedule/post", async (req, res): Promise<void> => {
     return;
   }
 
-  const [lease] = await db.select().from(leasesTable).where(eq(leasesTable.id, params.data.id));
+  const leaseId = params.data.id;
+  const throughPeriod = body.data.throughPeriod;
+
+  const [lease] = await db.select().from(leasesTable).where(eq(leasesTable.id, leaseId));
+  if (!lease) {
+    res.status(404).json({ error: "Lease not found" });
+    return;
+  }
+  if (lease.isShortTerm) {
+    res.status(400).json({ error: "Short-term leases have no schedule to post" });
+    return;
+  }
+
+  const accounts = {
+    rouAssetAccount: lease.rouAssetAccount,
+    leaseLiabilityAccount: lease.leaseLiabilityAccount,
+    interestExpenseAccount: lease.interestExpenseAccount,
+    amortizationExpenseAccount: lease.amortizationExpenseAccount,
+    cashAccount: lease.cashAccount,
+  };
+
+  await db.transaction(async (tx) => {
+    // Lock draft rows for the duration of the transaction so concurrent posts
+    // can't both observe the same drafts and double-insert JEs.
+    const draftRows = await tx
+      .select()
+      .from(scheduleEntriesTable)
+      .where(
+        and(
+          eq(scheduleEntriesTable.leaseId, leaseId),
+          eq(scheduleEntriesTable.status, "draft"),
+          lte(scheduleEntriesTable.periodNumber, throughPeriod),
+        ),
+      )
+      .orderBy(scheduleEntriesTable.periodNumber)
+      .for("update");
+
+    for (const entry of draftRows) {
+      const periodLabel = periodLabelFromDate(entry.paymentDate);
+      // The schedule_entries.status filter on the outer query is already our
+      // idempotency guard — only "draft" rows reach here. We do NOT also check
+      // for an existing posted JE on this scheduleEntry because reversal JEs
+      // are themselves status="posted" (they offset the original) and would
+      // wrongly suppress re-posting after an unpost cycle.
+
+      const lines = buildJournalLines(
+        lease.leaseClassification as LeaseClassification,
+        {
+          interest: toNumber(entry.interest),
+          principal: toNumber(entry.principal),
+          payment: toNumber(entry.payment),
+          rouAmortization: toNumber(entry.rouAmortization),
+        },
+        accounts,
+        periodLabel,
+      );
+      assertBalanced(lines);
+
+      // Counter so we can post → unpost → re-post the same period without
+      // colliding on the unique idempotency_key constraint.
+      const priorCount = await tx.$count(
+        journalEntriesTable,
+        eq(journalEntriesTable.scheduleEntryId, entry.id),
+      );
+      const idempotencyKey = `lease-${leaseId}-period-${entry.periodNumber}-v${priorCount + 1}`;
+
+      const [je] = await tx
+        .insert(journalEntriesTable)
+        .values({
+          leaseId,
+          scheduleEntryId: entry.id,
+          period: periodLabel,
+          status: "posted",
+          idempotencyKey,
+          memo: `Lease ${lease.name} — period ${periodLabel}`,
+        })
+        .returning();
+
+      await tx.insert(journalEntryLinesTable).values(
+        lines.map((l) => ({
+          journalEntryId: je.id,
+          accountCode: l.accountCode,
+          debit: l.debit,
+          credit: l.credit,
+          memo: l.memo,
+        })),
+      );
+
+      await tx
+        .update(scheduleEntriesTable)
+        .set({ status: "posted" })
+        .where(eq(scheduleEntriesTable.id, entry.id));
+    }
+  });
+
+  await returnSchedule(res, leaseId);
+});
+
+// POST /leases/:id/schedule/unpost/:periodNumber — reverses the posted JE for
+// a single period: marks the original "reversed", creates a new offsetting
+// "posted" JE with debits/credits swapped, and flips the schedule entry back
+// to "draft". Idempotent: a period that isn't currently posted returns 400.
+router.post("/leases/:id/schedule/unpost/:periodNumber", async (req, res): Promise<void> => {
+  const params = UnpostLeasePaymentParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const leaseId = params.data.id;
+  const periodNumber = params.data.periodNumber;
+
+  const [lease] = await db.select().from(leasesTable).where(eq(leasesTable.id, leaseId));
   if (!lease) {
     res.status(404).json({ error: "Lease not found" });
     return;
   }
 
-  await db
-    .update(scheduleEntriesTable)
-    .set({ status: "posted" })
-    .where(
-      and(
-        eq(scheduleEntriesTable.leaseId, params.data.id),
-        eq(scheduleEntriesTable.status, "draft"),
-        lte(scheduleEntriesTable.periodNumber, body.data.throughPeriod),
-      ),
+  // Status check + JE lookup happen inside the transaction with FOR UPDATE on
+  // the schedule row so two concurrent unpost calls can't both create
+  // reversals for the same period.
+  type HttpError = { status: number; message: string };
+  const errBox: { value: HttpError | null } = { value: null };
+  const fail = (status: number, message: string) => { errBox.value = { status, message }; };
+  await db.transaction(async (tx) => {
+    const [entry] = await tx
+      .select()
+      .from(scheduleEntriesTable)
+      .where(
+        and(
+          eq(scheduleEntriesTable.leaseId, leaseId),
+          eq(scheduleEntriesTable.periodNumber, periodNumber),
+        ),
+      )
+      .for("update");
+    if (!entry) {
+      fail(404, "Period not found");
+      return;
+    }
+    if (entry.status !== "posted") {
+      fail(400, "Period is not currently posted");
+      return;
+    }
+
+    // Latest non-reversed posted JE for this scheduleEntry. Excluding rows
+    // whose reversesEntryId is set ensures we pick the original posting, not
+    // an offsetting reversal entry that also carries status="posted".
+    const [original] = await tx
+      .select()
+      .from(journalEntriesTable)
+      .where(
+        and(
+          eq(journalEntriesTable.scheduleEntryId, entry.id),
+          eq(journalEntriesTable.status, "posted"),
+          sql`${journalEntriesTable.reversesEntryId} IS NULL`,
+        ),
+      )
+      .orderBy(sql`${journalEntriesTable.postedAt} desc`)
+      .limit(1);
+    if (!original) {
+      fail(400, "No posted journal entry found for this period");
+      return;
+    }
+
+    const periodLabel = periodLabelFromDate(entry.paymentDate);
+
+    const originalLines = await tx
+      .select()
+      .from(journalEntryLinesTable)
+      .where(eq(journalEntryLinesTable.journalEntryId, original.id));
+
+    const reversed = reverseLines(
+      originalLines.map((l) => ({
+        accountCode: l.accountCode,
+        debit: l.debit,
+        credit: l.credit,
+        memo: l.memo,
+      })),
+      periodLabel,
     );
+    assertBalanced(reversed);
+
+    const priorCount = await tx.$count(
+      journalEntriesTable,
+      eq(journalEntriesTable.scheduleEntryId, entry.id),
+    );
+    const idempotencyKey = `lease-${leaseId}-period-${periodNumber}-rev-v${priorCount + 1}`;
+
+    const [reversal] = await tx
+      .insert(journalEntriesTable)
+      .values({
+        leaseId,
+        scheduleEntryId: entry.id,
+        period: periodLabel,
+        status: "posted",
+        idempotencyKey,
+        reversesEntryId: original.id,
+        memo: `Reversal of JE #${original.id} (${periodLabel})`,
+      })
+      .returning();
+
+    await tx.insert(journalEntryLinesTable).values(
+      reversed.map((l) => ({
+        journalEntryId: reversal.id,
+        accountCode: l.accountCode,
+        debit: l.debit,
+        credit: l.credit,
+        memo: l.memo,
+      })),
+    );
+
+    await tx
+      .update(journalEntriesTable)
+      .set({ status: "reversed" })
+      .where(eq(journalEntriesTable.id, original.id));
+
+    await tx
+      .update(scheduleEntriesTable)
+      .set({ status: "draft" })
+      .where(eq(scheduleEntriesTable.id, entry.id));
+  });
+
+  if (errBox.value) {
+    res.status(errBox.value.status).json({ error: errBox.value.message });
+    return;
+  }
+
+  await returnSchedule(res, leaseId);
+});
+
+// GET /leases/:id/journal-entries — all JEs (posted and reversed) for a lease,
+// each with its lines. Ordered by postedAt asc.
+router.get("/leases/:id/journal-entries", async (req, res): Promise<void> => {
+  const params = GetLeaseJournalEntriesParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const leaseId = params.data.id;
+
+  const [lease] = await db.select().from(leasesTable).where(eq(leasesTable.id, leaseId));
+  if (!lease) {
+    res.status(404).json({ error: "Lease not found" });
+    return;
+  }
 
   const entries = await db
     .select()
-    .from(scheduleEntriesTable)
-    .where(eq(scheduleEntriesTable.leaseId, params.data.id))
-    .orderBy(scheduleEntriesTable.periodNumber);
+    .from(journalEntriesTable)
+    .where(eq(journalEntriesTable.leaseId, leaseId))
+    .orderBy(asc(journalEntriesTable.postedAt), asc(journalEntriesTable.id));
+
+  if (entries.length === 0) {
+    res.json([]);
+    return;
+  }
+
+  const allLines = await db
+    .select()
+    .from(journalEntryLinesTable)
+    .where(inArray(journalEntryLinesTable.journalEntryId, entries.map((e) => e.id)))
+    .orderBy(asc(journalEntryLinesTable.id));
+
+  const linesByJe = new Map<number, typeof allLines>();
+  for (const l of allLines) {
+    const arr = linesByJe.get(l.journalEntryId) ?? [];
+    arr.push(l);
+    linesByJe.set(l.journalEntryId, arr);
+  }
 
   res.json(
     entries.map((e) => ({
       id: e.id,
       leaseId: e.leaseId,
-      periodNumber: e.periodNumber,
-      paymentDate: e.paymentDate,
-      beginningBalance: toNumber(e.beginningBalance),
-      payment: toNumber(e.payment),
-      interest: toNumber(e.interest),
-      principal: toNumber(e.principal),
-      endingBalance: toNumber(e.endingBalance),
-      rouAmortization: toNumber(e.rouAmortization),
+      scheduleEntryId: e.scheduleEntryId,
+      period: e.period,
+      postedAt: e.postedAt.toISOString(),
       status: e.status,
+      idempotencyKey: e.idempotencyKey,
+      reversesEntryId: e.reversesEntryId,
+      memo: e.memo,
+      lines: (linesByJe.get(e.id) ?? []).map((l) => ({
+        id: l.id,
+        journalEntryId: l.journalEntryId,
+        accountCode: l.accountCode,
+        debit: toNumber(l.debit),
+        credit: toNumber(l.credit),
+        memo: l.memo,
+      })),
     })),
   );
 });

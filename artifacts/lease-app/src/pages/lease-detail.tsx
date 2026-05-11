@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, ArrowLeft, Info, Undo2 } from "lucide-react";
+import { ChevronRight, ArrowLeft, Info, Undo2, AlertTriangle } from "lucide-react";
 import {
   useGetLease,
   getGetLeaseQueryKey,
@@ -35,6 +35,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
@@ -53,6 +54,11 @@ export default function LeaseDetailPage() {
 
   const [postModalOpen, setPostModalOpen] = useState(false);
   const [throughPeriod, setThroughPeriod] = useState<number | "">("");
+  // Captured from a 400 { missingAccounts: [...] } response — surfaces inline
+  // on the lease detail page rather than only as a transient toast.
+  const [postMissingAccounts, setPostMissingAccounts] = useState<
+    Array<{ field: string; label: string }> | null
+  >(null);
 
   const postPayments = usePostLeasePayments();
   const unpostPayment = useUnpostLeasePayment();
@@ -78,12 +84,23 @@ export default function LeaseDetailPage() {
     postPayments.mutate({ id: leaseId, data: { throughPeriod: Number(throughPeriod) } }, {
       onSuccess: () => {
         toast({ title: "Payments posted successfully" });
+        setPostMissingAccounts(null);
         invalidateAll();
         setPostModalOpen(false);
         setThroughPeriod("");
       },
       onError: (err) => {
-        toast({ title: "Error posting payments", description: err.data?.error, variant: "destructive" });
+        // The post endpoint returns { error, missingAccounts? } — surface the
+        // typed payload as an inline panel so users know exactly which lease
+        // fields to fill in. The narrowing through `unknown` is needed because
+        // the generated ApiError<T> only knows about the success-shape data.
+        const data = err.data as { error?: string; missingAccounts?: Array<{ field: string; label: string }> } | undefined;
+        if (data?.missingAccounts && data.missingAccounts.length > 0) {
+          setPostMissingAccounts(data.missingAccounts);
+          setPostModalOpen(false);
+        } else {
+          toast({ title: "Error posting payments", description: data?.error, variant: "destructive" });
+        }
       }
     });
   };
@@ -149,12 +166,85 @@ export default function LeaseDetailPage() {
               </Badge>
             )}
           </div>
-          {!lease.isShortTerm && (
-            <Button onClick={() => setPostModalOpen(true)} data-testid="button-post-payments">
-              Post Payments
-            </Button>
-          )}
+          {!lease.isShortTerm && (() => {
+            // Mirror the server's validateAccountsForPost so we can disable the
+            // button and explain why before the user even clicks it. Source of
+            // truth lives in artifacts/api-server/src/lib/journal.ts; we only
+            // duplicate the field list here for UX (the server still enforces).
+            const required: Array<{ field: keyof typeof lease; label: string }> =
+              lease.leaseClassification === "finance"
+                ? [
+                    { field: "interestExpenseAccount", label: "Interest Expense Account" },
+                    { field: "amortizationExpenseAccount", label: "Amortization Expense Account" },
+                    { field: "leaseLiabilityAccount", label: "Lease Liability Account" },
+                    { field: "rouAssetAccount", label: "ROU Asset Account" },
+                    { field: "cashAccount", label: "Cash Account" },
+                  ]
+                : [
+                    { field: "amortizationExpenseAccount", label: "Lease Expense Account" },
+                    { field: "leaseLiabilityAccount", label: "Lease Liability Account" },
+                    { field: "rouAssetAccount", label: "ROU Asset Account" },
+                    { field: "cashAccount", label: "Cash Account" },
+                  ];
+            const missing = required.filter((r) => {
+              const v = lease[r.field];
+              return typeof v !== "string" || v.trim() === "";
+            });
+            const button = (
+              <Button
+                onClick={() => setPostModalOpen(true)}
+                disabled={missing.length > 0}
+                data-testid="button-post-payments"
+              >
+                Post Payments
+              </Button>
+            );
+            if (missing.length === 0) return button;
+            return (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span tabIndex={0}>{button}</span>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p className="font-medium mb-1">Missing GL accounts:</p>
+                    <ul className="list-disc pl-4 text-xs">
+                      {missing.map((m) => <li key={m.field}>{m.label}</li>)}
+                    </ul>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            );
+          })()}
         </div>
+
+        {postMissingAccounts && postMissingAccounts.length > 0 && (
+          <div
+            className="flex items-start gap-3 p-4 rounded-md border border-destructive/30 bg-destructive/5"
+            data-testid="alert-missing-accounts"
+          >
+            <AlertTriangle className="h-5 w-5 shrink-0 text-destructive mt-0.5" />
+            <div className="flex-1 space-y-1 text-sm">
+              <p className="font-medium text-destructive">Cannot post: missing GL account mappings</p>
+              <p className="text-muted-foreground">
+                Fill in the following accounts on the lease before posting:
+              </p>
+              <ul className="list-disc pl-5 text-foreground">
+                {postMissingAccounts.map((m) => (
+                  <li key={m.field}>{m.label}</li>
+                ))}
+              </ul>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPostMissingAccounts(null)}
+              data-testid="button-dismiss-missing-accounts"
+            >
+              Dismiss
+            </Button>
+          </div>
+        )}
 
         <Card>
           <CardHeader className="pb-3">

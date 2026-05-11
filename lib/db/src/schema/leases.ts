@@ -77,6 +77,7 @@ export const scheduleEntriesTable = pgTable("schedule_entries", {
   principal: numeric("principal", { precision: 15, scale: 2 }).notNull(),
   endingBalance: numeric("ending_balance", { precision: 15, scale: 2 }).notNull(),
   rouAmortization: numeric("rou_amortization", { precision: 15, scale: 2 }).notNull(),
+  leaseExpense: numeric("lease_expense", { precision: 15, scale: 2 }).notNull().default("0"),
   status: scheduleStatusEnum("status").notNull().default("draft"),
 });
 

@@ -1,0 +1,111 @@
+Two cleanup fixes following the lease accounting work. Both are about hardening 
+the journal entry generation against subtle correctness issues.
+
+=== Fix 1: Store straight-line lease expense as a column instead of 
+reconstructing it ===
+
+Currently in artifacts/api-server/src/lib/journal.ts, the operating-lease JE 
+reconstructs straight-line expense as `interest + rouAmortization`. This works 
+today because of how the schedule generator defines rouAmortization, but it 
+hides an invariant and will silently break if remeasurement is ever added (or 
+if the formula ever changes in just the generator). Make the value explicit.
+
+Changes:
+
+1. In lib/db/src/schema/leases.ts, add a column to schedule_entries:
+   leaseExpense: numeric("lease_expense", { precision: 15, scale: 2 }).notNull().default("0")
+
+   For finance leases this should be interest + rouAmortization (still equal to 
+   interest + straight-line ROU). For operating leases this is the periodic 
+   straight-line expense. Same value in both cases by construction, but we want 
+   it persisted so the JE builder doesn't have to know the formula.
+
+2. In artifacts/api-server/src/lib/amortization.ts, extend ScheduleRow to 
+   include leaseExpense, and have generateSchedule populate it:
+   - operating: leaseExpense = round2(straightLineExpense)  (already computed)
+   - finance: leaseExpense = round2(interest + rouAmortization)
+
+3. In artifacts/api-server/src/routes/leases.ts, persist leaseExpense when 
+   inserting schedule_entries rows (POST /leases and the regen path in 
+   PUT /leases/:id).
+
+4. In artifacts/api-server/src/lib/journal.ts:
+   - Add leaseExpense: number to ScheduleAmounts.
+   - In buildJournalLines for the operating branch, use amounts.leaseExpense 
+     directly instead of computing `interest + rouAmortization`.
+   - The finance branch is unchanged (it doesn't reference straight-line).
+
+5. In the post endpoint in routes/leases.ts, pass entry.leaseExpense through 
+   to buildJournalLines via the ScheduleAmounts object.
+
+6. Update the OpenAPI spec (lib/api-spec/openapi.yaml) to include leaseExpense 
+   on the ScheduleEntry response object. Re-run codegen.
+
+7. After all the above, write a one-shot migration script in scripts/src/ that 
+   backfills leaseExpense for existing schedule_entries rows. For each row, 
+   leaseExpense = interest + rouAmortization (the existing invariant). Run it 
+   after the schema push.
+
+=== Fix 2: Require GL accounts at post time instead of silently posting to 
+UNASSIGNED-X codes ===
+
+Currently in lib/journal.ts, if any account field on the lease is null/empty, 
+the JE builder substitutes `UNASSIGNED-INTEREST_EXPENSE`, `UNASSIGNED-CASH`, 
+etc. This means a lease created without account mappings will silently post JEs 
+to garbage GL accounts. Worst of both worlds: looks like it worked, but 
+produces unusable data.
+
+Make this a hard validation at post time, not at lease creation time. Reason: 
+users should be able to draft leases without picking accounts yet (e.g. AC 
+firms onboarding), they just shouldn't be able to post until accounts are 
+filled.
+
+Changes:
+
+1. In artifacts/api-server/src/lib/journal.ts:
+   - Remove the UNASSIGNED-* fallback entirely from the debit() and credit() 
+     helpers. accountCode must be a non-empty string.
+   - Export a new function validateAccountsForPost(classification, accounts) 
+     that returns an array of missing-field errors:
+       - operating leases need: amortizationExpenseAccount (used as lease 
+         expense), leaseLiabilityAccount, rouAssetAccount, cashAccount
+       - finance leases need: interestExpenseAccount, amortizationExpenseAccount, 
+         leaseLiabilityAccount, rouAssetAccount, cashAccount
+     Empty string or whitespace-only counts as missing.
+
+2. In the POST /leases/:id/schedule/post handler in routes/leases.ts:
+   - Call validateAccountsForPost before opening the transaction.
+   - If it returns any missing accounts, respond 400 with:
+     { error: "Cannot post: missing GL account mappings", missingAccounts: [...] }
+   - Same check on the unpost endpoint (it reads original lines so it doesn't 
+     strictly need the lease-level accounts, but if any of the JE lines 
+     somehow have an UNASSIGNED-* code from old data, reject with 400 and 
+     tell the user to fix the lease first).
+
+3. On the frontend (artifacts/lease-app/src/pages/lease-detail.tsx), 
+   surface this:
+   - If the POST returns 400 with missingAccounts, show an inline error 
+     listing which fields are missing, with a button "Edit lease" that opens 
+     the AddLeaseModal in edit mode focused on the accounts section.
+   - Disable the "Post payments" button if the current lease in state is 
+     missing required accounts for its classification, with a tooltip 
+     explaining why.
+
+4. Optional cleanup: add a one-shot script in scripts/src/ that finds any 
+   existing journal_entry_lines with accountCode starting with "UNASSIGNED-" 
+   and lists the affected leases so they can be fixed manually. Don't 
+   auto-fix; just report.
+
+After both fixes:
+- pnpm run typecheck
+- pnpm --filter @workspace/api-spec run codegen
+- pnpm --filter @workspace/db run push
+- Run the backfill script for leaseExpense
+- Update replit.md "Architecture decisions" with:
+  * "schedule_entries.leaseExpense stores the period's straight-line lease 
+     expense (operating) or total P&L expense (finance) so the JE builder 
+     doesn't reconstruct it from interest + rouAmortization"
+  * "Posting requires all GL account mappings to be filled on the lease. 
+     Account fields remain nullable on the lease itself so drafts can be 
+     created without them, but the post endpoint rejects with 400 if any 
+     required account is missing for the lease's classification"

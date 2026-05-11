@@ -18,5 +18,7 @@ export interface ScheduleEntry {
   principal: number;
   endingBalance: number;
   rouAmortization: number;
+  /** Persisted P&L expense for the period — straight-line lease expense for operating leases, interest+ROU amortization for finance leases. */
+  leaseExpense: number;
   status: ScheduleEntryStatus;
 }

@@ -33,6 +33,7 @@ import {
   reverseLines,
   assertBalanced,
   periodLabelFromDate,
+  validateAccountsForPost,
 } from "../lib/journal";
 
 const router: IRouter = Router();
@@ -244,19 +245,7 @@ router.get("/leases/:id", async (req, res): Promise<void> => {
 
   res.json({
     ...mapped,
-    schedule: entries.map((e) => ({
-      id: e.id,
-      leaseId: e.leaseId,
-      periodNumber: e.periodNumber,
-      paymentDate: e.paymentDate,
-      beginningBalance: toNumber(e.beginningBalance),
-      payment: toNumber(e.payment),
-      interest: toNumber(e.interest),
-      principal: toNumber(e.principal),
-      endingBalance: toNumber(e.endingBalance),
-      rouAmortization: toNumber(e.rouAmortization),
-      status: e.status,
-    })),
+    schedule: entries.map(mapScheduleEntry),
   });
 });
 
@@ -321,6 +310,7 @@ router.post("/leases", async (req, res): Promise<void> => {
           principal: r.principal,
           endingBalance: r.endingBalance,
           rouAmortization: r.rouAmortization,
+          leaseExpense: r.leaseExpense,
           status: "draft" as const,
         })),
       );
@@ -450,6 +440,7 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
             principal: r.principal,
             endingBalance: r.endingBalance,
             rouAmortization: r.rouAmortization,
+            leaseExpense: r.leaseExpense,
             status: "draft" as const,
           })),
         );
@@ -503,21 +494,7 @@ router.get("/leases/:id/schedule", async (req, res): Promise<void> => {
     .where(eq(scheduleEntriesTable.leaseId, params.data.id))
     .orderBy(scheduleEntriesTable.periodNumber);
 
-  res.json(
-    entries.map((e) => ({
-      id: e.id,
-      leaseId: e.leaseId,
-      periodNumber: e.periodNumber,
-      paymentDate: e.paymentDate,
-      beginningBalance: toNumber(e.beginningBalance),
-      payment: toNumber(e.payment),
-      interest: toNumber(e.interest),
-      principal: toNumber(e.principal),
-      endingBalance: toNumber(e.endingBalance),
-      rouAmortization: toNumber(e.rouAmortization),
-      status: e.status,
-    })),
-  );
+  res.json(entries.map(mapScheduleEntry));
 });
 
 function mapScheduleEntry(e: typeof scheduleEntriesTable.$inferSelect) {
@@ -532,6 +509,7 @@ function mapScheduleEntry(e: typeof scheduleEntriesTable.$inferSelect) {
     principal: toNumber(e.principal),
     endingBalance: toNumber(e.endingBalance),
     rouAmortization: toNumber(e.rouAmortization),
+    leaseExpense: toNumber(e.leaseExpense),
     status: e.status,
   };
 }
@@ -582,6 +560,20 @@ router.post("/leases/:id/schedule/post", async (req, res): Promise<void> => {
     cashAccount: lease.cashAccount,
   };
 
+  // Hard validation: refuse to post if any required GL account is missing for
+  // this lease's classification. We do NOT silently substitute placeholders.
+  const missing = validateAccountsForPost(
+    lease.leaseClassification as LeaseClassification,
+    accounts,
+  );
+  if (missing.length > 0) {
+    res.status(400).json({
+      error: "Cannot post: missing GL account mappings",
+      missingAccounts: missing,
+    });
+    return;
+  }
+
   await db.transaction(async (tx) => {
     // Lock draft rows for the duration of the transaction so concurrent posts
     // can't both observe the same drafts and double-insert JEs.
@@ -613,6 +605,7 @@ router.post("/leases/:id/schedule/post", async (req, res): Promise<void> => {
           principal: toNumber(entry.principal),
           payment: toNumber(entry.payment),
           rouAmortization: toNumber(entry.rouAmortization),
+          leaseExpense: toNumber(entry.leaseExpense),
         },
         accounts,
         periodLabel,
@@ -730,6 +723,21 @@ router.post("/leases/:id/schedule/unpost/:periodNumber", async (req, res): Promi
       .select()
       .from(journalEntryLinesTable)
       .where(eq(journalEntryLinesTable.journalEntryId, original.id));
+
+    // If the original JE was somehow posted to placeholder accounts (e.g. from
+    // legacy data before validation was tightened), refuse to reverse: the
+    // user must fix the lease accounts and we don't want to perpetuate
+    // garbage GL codes into another posted JE.
+    const stale = originalLines
+      .map((l) => l.accountCode)
+      .filter((c) => c.startsWith("UNASSIGNED-"));
+    if (stale.length > 0) {
+      fail(
+        400,
+        `Original journal entry references placeholder accounts (${[...new Set(stale)].join(", ")}). Edit the lease GL accounts before reversing.`,
+      );
+      return;
+    }
 
     const reversed = reverseLines(
       originalLines.map((l) => ({

@@ -607,6 +607,7 @@ components:
         - principal
         - endingBalance
         - rouAmortization
+        - leaseExpense
         - status
       properties:
         id:
@@ -630,6 +631,9 @@ components:
           type: number
         rouAmortization:
           type: number
+        leaseExpense:
+          type: number
+          description: Persisted P&L expense for the period — straight-line lease expense for operating leases, interest+ROU amortization for finance leases.
         status:
           type: string
           enum: [draft, posted]

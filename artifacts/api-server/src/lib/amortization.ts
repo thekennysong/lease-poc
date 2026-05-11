@@ -7,6 +7,17 @@ export interface ScheduleRow {
   principal: string;
   endingBalance: string;
   rouAmortization: string;
+  /**
+   * Periodic P&L expense.
+   *  - operating: straight-line lease expense (totalLeaseCost / numPeriods)
+   *  - finance: interest + ROU amortization (the two P&L lines combined)
+   * Persisted on schedule_entries so the JE builder doesn't reconstruct it
+   * from the formula `interest + rouAmortization`. That equality holds today
+   * for operating leases by construction of the generator, but storing it
+   * explicitly insulates the JE layer from any future generator changes
+   * (e.g. lease remeasurement).
+   */
+  leaseExpense: string;
 }
 
 export type PaymentFrequency = "monthly" | "quarterly" | "annually";
@@ -125,6 +136,11 @@ export function generateSchedule(
     const paymentDate = new Date(startDate);
     paymentDate.setMonth(startDate.getMonth() + monthOffset);
 
+    const leaseExpense =
+      leaseClassification === "operating"
+        ? straightLineExpense
+        : round2(interest + rouAmortization);
+
     rows.push({
       periodNumber: i,
       paymentDate: formatDate(paymentDate),
@@ -134,6 +150,7 @@ export function generateSchedule(
       principal: principal.toFixed(2),
       endingBalance: endingBalance.toFixed(2),
       rouAmortization: rouAmortization.toFixed(2),
+      leaseExpense: leaseExpense.toFixed(2),
     });
 
     balance = endingBalance;

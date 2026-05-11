@@ -187,6 +187,11 @@ export const GetLeaseResponse = zod.object({
       principal: zod.number(),
       endingBalance: zod.number(),
       rouAmortization: zod.number(),
+      leaseExpense: zod
+        .number()
+        .describe(
+          "Persisted P&L expense for the period — straight-line lease expense for operating leases, interest+ROU amortization for finance leases.",
+        ),
       status: zod.enum(["draft", "posted"]),
     }),
   ),
@@ -321,6 +326,11 @@ export const GetLeaseScheduleResponseItem = zod.object({
   principal: zod.number(),
   endingBalance: zod.number(),
   rouAmortization: zod.number(),
+  leaseExpense: zod
+    .number()
+    .describe(
+      "Persisted P&L expense for the period — straight-line lease expense for operating leases, interest+ROU amortization for finance leases.",
+    ),
   status: zod.enum(["draft", "posted"]),
 });
 export const GetLeaseScheduleResponse = zod.array(GetLeaseScheduleResponseItem);
@@ -354,6 +364,11 @@ export const PostLeasePaymentsResponseItem = zod.object({
   principal: zod.number(),
   endingBalance: zod.number(),
   rouAmortization: zod.number(),
+  leaseExpense: zod
+    .number()
+    .describe(
+      "Persisted P&L expense for the period — straight-line lease expense for operating leases, interest+ROU amortization for finance leases.",
+    ),
   status: zod.enum(["draft", "posted"]),
 });
 export const PostLeasePaymentsResponse = zod.array(
@@ -384,6 +399,11 @@ export const UnpostLeasePaymentResponseItem = zod.object({
   principal: zod.number(),
   endingBalance: zod.number(),
   rouAmortization: zod.number(),
+  leaseExpense: zod
+    .number()
+    .describe(
+      "Persisted P&L expense for the period — straight-line lease expense for operating leases, interest+ROU amortization for finance leases.",
+    ),
   status: zod.enum(["draft", "posted"]),
 });
 export const UnpostLeasePaymentResponse = zod.array(

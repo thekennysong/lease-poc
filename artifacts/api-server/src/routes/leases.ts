@@ -378,19 +378,13 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
   if (data.leaseIncentives !== undefined) updateData.leaseIncentives = data.leaseIncentives.toString();
   if (data.status !== undefined) updateData.status = data.status;
 
-  const [lease] = await db
-    .update(leasesTable)
-    .set(updateData)
-    .where(eq(leasesTable.id, params.data.id))
-    .returning();
-
-  if (!lease) {
-    res.status(404).json({ error: "Lease not found" });
-    return;
-  }
-
+  // Compute regen flags from the parsed body BEFORE any mutation. The
+  // posted-period guard must run before the UPDATE so a 400 cannot leave the
+  // lease row mutated. (Regression test: previously the lease was updated
+  // first, then we 400'd, leaving accounting state inconsistent — posted
+  // schedule/journal history tied to pre-change terms while master terms
+  // had already moved.)
   const shortTermToggled = data.isShortTerm !== undefined && data.isShortTerm !== existing.isShortTerm;
-
   const regenerate =
     data.monthlyPayment !== undefined ||
     data.presentValue !== undefined ||
@@ -405,47 +399,98 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
     data.initialDirectCosts !== undefined ||
     data.leaseIncentives !== undefined;
 
-  if (regenerate) {
-    // Toggling isShortTerm changes whether ANY schedule rows should exist for
-    // this lease. We must wipe posted rows too; otherwise the lease would carry
-    // historical interest/liability artifacts that the new election denies.
-    // Other regenerations (payment, rate, etc.) only clear drafts.
-    if (shortTermToggled) {
-      await db
-        .delete(scheduleEntriesTable)
-        .where(eq(scheduleEntriesTable.leaseId, lease.id));
-    } else {
-      await db
-        .delete(scheduleEntriesTable)
-        .where(
-          and(
-            eq(scheduleEntriesTable.leaseId, lease.id),
-            eq(scheduleEntriesTable.status, "draft"),
-          ),
-        );
+  // Posted-period guard. ANY regen-triggering change (payment, rate, term,
+  // classification, etc.) is incompatible with already-posted periods.
+  // Previously we only deleted drafts and re-inserted a fresh schedule
+  // starting at periodNumber=1, which produced two rows sharing
+  // period_number=1 alongside the kept posted row — and then collided on the
+  // journal_entries idempotency_key (`lease-X-period-1-v1`) on the next post.
+  // Accounting-wise you also cannot retroactively change the terms of a
+  // lease that already has posted journal entries; the user must unpost first.
+  // isShortTerm toggle is the lone exception: it wipes everything (posted
+  // included) because the election denies the lease should have a schedule.
+  if (regenerate && !shortTermToggled) {
+    const postedRows = await db
+      .select({ periodNumber: scheduleEntriesTable.periodNumber })
+      .from(scheduleEntriesTable)
+      .where(
+        and(
+          eq(scheduleEntriesTable.leaseId, params.data.id),
+          eq(scheduleEntriesTable.status, "posted"),
+        ),
+      )
+      .orderBy(scheduleEntriesTable.periodNumber);
+
+    if (postedRows.length > 0) {
+      res.status(400).json({
+        error:
+          "Cannot modify lease terms while posted periods exist. Unpost the affected periods first, then retry.",
+        postedPeriods: postedRows.map((r) => r.periodNumber),
+      });
+      return;
     }
+  }
 
-    if (!lease.isShortTerm) {
-      const rows = buildScheduleRows(lease);
+  // UPDATE + schedule delete/regen happen in a single transaction so a partial
+  // failure (e.g. insert error after delete) doesn't leave the lease with no
+  // schedule rows. The posted-period guard above already ran read-only
+  // outside the txn, which is fine — the only race window is concurrent posts
+  // happening between the guard and the txn, which would just become a
+  // duplicate-key error caught by the surrounding error handler.
+  const lease = await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(leasesTable)
+      .set(updateData)
+      .where(eq(leasesTable.id, params.data.id))
+      .returning();
 
-      if (rows.length > 0) {
-        await db.insert(scheduleEntriesTable).values(
-          rows.map((r) => ({
-            leaseId: lease.id,
-            periodNumber: r.periodNumber,
-            paymentDate: r.paymentDate,
-            beginningBalance: r.beginningBalance,
-            payment: r.payment,
-            interest: r.interest,
-            principal: r.principal,
-            endingBalance: r.endingBalance,
-            rouAmortization: r.rouAmortization,
-            leaseExpense: r.leaseExpense,
-            status: "draft" as const,
-          })),
-        );
+    if (!updated) return null;
+
+    if (regenerate) {
+      if (shortTermToggled) {
+        await tx
+          .delete(scheduleEntriesTable)
+          .where(eq(scheduleEntriesTable.leaseId, updated.id));
+      } else {
+        await tx
+          .delete(scheduleEntriesTable)
+          .where(
+            and(
+              eq(scheduleEntriesTable.leaseId, updated.id),
+              eq(scheduleEntriesTable.status, "draft"),
+            ),
+          );
+      }
+
+      if (!updated.isShortTerm) {
+        const rows = buildScheduleRows(updated);
+
+        if (rows.length > 0) {
+          await tx.insert(scheduleEntriesTable).values(
+            rows.map((r) => ({
+              leaseId: updated.id,
+              periodNumber: r.periodNumber,
+              paymentDate: r.paymentDate,
+              beginningBalance: r.beginningBalance,
+              payment: r.payment,
+              interest: r.interest,
+              principal: r.principal,
+              endingBalance: r.endingBalance,
+              rouAmortization: r.rouAmortization,
+              leaseExpense: r.leaseExpense,
+              status: "draft" as const,
+            })),
+          );
+        }
       }
     }
+
+    return updated;
+  });
+
+  if (!lease) {
+    res.status(404).json({ error: "Lease not found" });
+    return;
   }
 
   const mapped = mapLease(lease);

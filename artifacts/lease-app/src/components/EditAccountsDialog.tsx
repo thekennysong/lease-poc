@@ -196,6 +196,11 @@ export function EditAccountsDialog({
               Matched {autoResolved.length} field{autoResolved.length === 1 ? "" : "s"} to your QuickBooks chart of accounts by account number. Click <strong>Save</strong> to apply.
             </div>
           )}
+          {qboAccounts.length > 0 && qboAccounts.every((a) => !a.acctNum) && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+              Your QuickBooks company doesn&apos;t have account numbers enabled, so legacy codes like <code>1800</code> can&apos;t be auto-matched. Pick the right account from each dropdown below, or enable account numbers in QuickBooks (Settings → Account and Settings → Advanced) and re-sync the chart of accounts.
+            </div>
+          )}
           {FIELDS.map((f) => (
             <div key={f.key} className="space-y-2">
               <Label>{f.label}</Label>

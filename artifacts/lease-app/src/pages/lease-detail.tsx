@@ -12,6 +12,8 @@ import {
   getListLeasesQueryKey,
   getGetLeasesSummaryQueryKey,
   syncQboJournalEntry,
+  useGetQboStatus,
+  getGetQboStatusQueryKey,
 } from "@workspace/api-client-react";
 
 import { Layout } from "@/components/Layout";
@@ -72,6 +74,31 @@ export default function LeaseDetailPage() {
       queryKey: getGetLeaseJournalEntriesQueryKey(leaseId),
     },
   });
+
+  const { data: qboStatus } = useGetQboStatus({
+    query: { queryKey: getGetQboStatusQueryKey() },
+  });
+  // QBO transaction deep-link base. Sandbox and production use different hosts.
+  const qboBase = qboStatus?.connected
+    ? (qboStatus.environment === "production"
+        ? "https://qbo.intuit.com"
+        : "https://sandbox.qbo.intuit.com")
+    : null;
+  function qboJeUrl(qboId: string): string | null {
+    if (!qboBase) return null;
+    return `${qboBase}/app/journalentry?txnId=${encodeURIComponent(qboId)}`;
+  }
+  // Map of schedule entry id → the qboId of the latest non-reversed JE for
+  // that schedule row. Used to deep-link the "posted" status badge in the
+  // schedule table directly to the journal entry inside QuickBooks. Keyed by
+  // scheduleEntryId (not period) because period strings like "2025-01" can
+  // recur across leases and we want a precise 1:1 mapping.
+  const scheduleEntryToQboId = new Map<number, string>();
+  for (const je of journalEntries ?? []) {
+    if (je.status === "reversed") continue;
+    if (!je.qboId) continue;
+    scheduleEntryToQboId.set(je.scheduleEntryId, je.qboId);
+  }
 
   const [syncingJeId, setSyncingJeId] = useState<number | null>(null);
 
@@ -421,9 +448,32 @@ export default function LeaseDetailPage() {
                     <TableRow key={entry.id} className={entry.status === 'posted' ? 'bg-muted/20' : ''}>
                       <TableCell className="font-medium text-muted-foreground">{entry.periodNumber}</TableCell>
                       <TableCell>
-                        <Badge variant={entry.status === 'posted' ? "secondary" : "outline"} className="text-[10px]">
-                          {entry.status}
-                        </Badge>
+                        {(() => {
+                          const qboId = scheduleEntryToQboId.get(entry.id);
+                          const url = qboId ? qboJeUrl(qboId) : null;
+                          const badge = (
+                            <Badge
+                              variant={entry.status === 'posted' ? "secondary" : "outline"}
+                              className={`text-[10px] ${url ? "cursor-pointer hover:underline" : ""}`}
+                            >
+                              {entry.status}
+                              {url && <span className="ml-1 opacity-70">↗</span>}
+                            </Badge>
+                          );
+                          return url ? (
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={`Open JE ${qboId} in QuickBooks`}
+                              data-testid={`link-qbo-period-${entry.periodNumber}`}
+                            >
+                              {badge}
+                            </a>
+                          ) : (
+                            badge
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>{formatDate(entry.paymentDate)}</TableCell>
                       <TableCell className="text-right font-mono text-sm">{formatCurrency(entry.beginningBalance)}</TableCell>
@@ -493,7 +543,7 @@ export default function LeaseDetailPage() {
                                   reverses JE #{je.reversesEntryId}
                                 </span>
                               )}
-                              <QboJeBadge je={je} onRetry={handleRetryQboSync} />
+                              <QboJeBadge je={je} onRetry={handleRetryQboSync} qboBase={qboBase} />
                             </div>
                             <span className="text-xs text-muted-foreground">
                               {formatDate(je.postedAt)}
@@ -595,18 +645,33 @@ function QboJeBadge(props: {
     qboSyncError?: string | null;
   };
   onRetry: (id: number) => void;
+  qboBase: string | null;
 }) {
-  const { je } = props;
+  const { je, qboBase } = props;
   const status = je.qboSyncStatus;
   if (!status) return null;
 
   if (status === "synced") {
-    return (
-      <Badge variant="outline" className="gap-1 border-green-300 text-green-700 dark:border-green-800 dark:text-green-300" title={`QBO Id ${je.qboId ?? ""}`}>
+    const badge = (
+      <Badge variant="outline" className={`gap-1 border-green-300 text-green-700 dark:border-green-800 dark:text-green-300 ${qboBase ? "cursor-pointer hover:underline" : ""}`} title={`QBO Id ${je.qboId ?? ""}`}>
         <CheckCircle2 className="h-3 w-3" />
         QBO #{je.qboId}
+        {qboBase && <span className="ml-0.5 opacity-70">↗</span>}
       </Badge>
     );
+    if (qboBase && je.qboId) {
+      return (
+        <a
+          href={`${qboBase}/app/journalentry?txnId=${encodeURIComponent(je.qboId)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid={`link-qbo-je-${je.id}`}
+        >
+          {badge}
+        </a>
+      );
+    }
+    return badge;
   }
   if (status === "skipped") {
     return (

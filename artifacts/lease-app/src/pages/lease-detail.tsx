@@ -413,31 +413,31 @@ export default function LeaseDetailPage() {
                 {lease.rouAssetAccount && (
                   <div className="space-y-1">
                     <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">ROU Asset</span>
-                    <p className="font-mono">{lease.rouAssetAccount}</p>
+                    <p>{renderAccount(lease.rouAssetAccount)}</p>
                   </div>
                 )}
                 {lease.leaseLiabilityAccount && (
                   <div className="space-y-1">
                     <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Liability</span>
-                    <p className="font-mono">{lease.leaseLiabilityAccount}</p>
+                    <p>{renderAccount(lease.leaseLiabilityAccount)}</p>
                   </div>
                 )}
                 {lease.interestExpenseAccount && (
                   <div className="space-y-1">
                     <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Interest Exp</span>
-                    <p className="font-mono">{lease.interestExpenseAccount}</p>
+                    <p>{renderAccount(lease.interestExpenseAccount)}</p>
                   </div>
                 )}
                 {lease.amortizationExpenseAccount && (
                   <div className="space-y-1">
                     <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Amort Exp</span>
-                    <p className="font-mono">{lease.amortizationExpenseAccount}</p>
+                    <p>{renderAccount(lease.amortizationExpenseAccount)}</p>
                   </div>
                 )}
                 {lease.cashAccount && (
                   <div className="space-y-1">
                     <span className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Cash Acct</span>
-                    <p className="font-mono">{lease.cashAccount}</p>
+                    <p>{renderAccount(lease.cashAccount)}</p>
                   </div>
                 )}
               </div>

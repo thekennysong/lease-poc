@@ -15,6 +15,8 @@ import {
   syncQboJournalEntry,
   useGetQboStatus,
   getGetQboStatusQueryKey,
+  useGetQboAccounts,
+  getGetQboAccountsQueryKey,
 } from "@workspace/api-client-react";
 
 import { Layout } from "@/components/Layout";
@@ -80,6 +82,25 @@ export default function LeaseDetailPage() {
   const { data: qboStatus } = useGetQboStatus({
     query: { queryKey: getGetQboStatusQueryKey() },
   });
+  // QBO chart of accounts — used to render JE line account names instead of
+  // raw QBO IDs ("Checking" instead of "35"). Quietly disabled if QBO isn't
+  // connected; the lookup just falls back to the stored code.
+  const { data: qboAccountsData } = useGetQboAccounts({
+    query: {
+      queryKey: getGetQboAccountsQueryKey(),
+      enabled: qboStatus?.connected === true,
+      retry: false,
+      throwOnError: false,
+    },
+  });
+  const accountLookup = new Map<string, { name: string; acctNum?: string | null }>(
+    (qboAccountsData?.accounts ?? []).map((a) => [a.qboId, { name: a.name, acctNum: a.acctNum }]),
+  );
+  function renderAccount(code: string): string {
+    const a = accountLookup.get(code);
+    if (!a) return code;
+    return a.acctNum ? `${a.acctNum} — ${a.name}` : a.name;
+  }
   // QBO transaction deep-link. The web-app host is `app.qbo.intuit.com`
   // (production) or `app.sandbox.qbo.intuit.com` (sandbox) — NOT
   // `qbo.intuit.com`/`sandbox.qbo.intuit.com`, which won't resolve to the JE
@@ -585,7 +606,7 @@ export default function LeaseDetailPage() {
                             <TableBody>
                               {je.lines.map((l) => (
                                 <TableRow key={l.id}>
-                                  <TableCell className="font-mono text-sm">{l.accountCode}</TableCell>
+                                  <TableCell className="text-sm">{renderAccount(l.accountCode)}</TableCell>
                                   <TableCell className="text-sm text-muted-foreground">{l.memo ?? ""}</TableCell>
                                   <TableCell className="text-right font-mono text-sm">
                                     {l.debit > 0 ? formatCurrency(l.debit) : ""}

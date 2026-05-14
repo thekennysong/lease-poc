@@ -411,6 +411,94 @@ export const UnpostLeasePaymentResponse = zod.array(
 );
 
 /**
+ * @summary Get the current QuickBooks connection state
+ */
+export const GetQboStatusResponse = zod.object({
+  configured: zod
+    .boolean()
+    .describe(
+      "True if QBO_CLIENT_ID and QBO_CLIENT_SECRET are set on the server",
+    ),
+  connected: zod.boolean(),
+  message: zod.string().optional(),
+  realmId: zod.string().optional(),
+  environment: zod.enum(["sandbox", "production"]).optional(),
+  accessTokenExpiresAt: zod.coerce.date().optional(),
+  refreshTokenExpiresAt: zod.coerce.date().optional(),
+  connectedAt: zod.coerce.date().optional(),
+});
+
+/**
+ * @summary Disconnect QBO and wipe stored tokens + cached COA
+ */
+export const DisconnectQboResponse = zod.object({
+  disconnected: zod.boolean(),
+});
+
+/**
+ * @summary Cached QuickBooks chart of accounts
+ */
+export const GetQboAccountsResponse = zod.object({
+  realmId: zod.string(),
+  syncedAt: zod.coerce.date().nullish(),
+  count: zod.number().optional(),
+  accounts: zod.array(
+    zod.object({
+      qboId: zod.string(),
+      acctNum: zod.string().nullish(),
+      name: zod.string(),
+      fullyQualifiedName: zod.string().nullish(),
+      accountType: zod.string().nullish(),
+      accountSubType: zod.string().nullish(),
+      classification: zod.string().nullish(),
+      active: zod.boolean(),
+    }),
+  ),
+});
+
+/**
+ * @summary Re-pull chart of accounts from QuickBooks
+ */
+export const RefreshQboAccountsResponse = zod.object({
+  realmId: zod.string(),
+  syncedAt: zod.coerce.date().nullish(),
+  count: zod.number().optional(),
+  accounts: zod.array(
+    zod.object({
+      qboId: zod.string(),
+      acctNum: zod.string().nullish(),
+      name: zod.string(),
+      fullyQualifiedName: zod.string().nullish(),
+      accountType: zod.string().nullish(),
+      accountSubType: zod.string().nullish(),
+      classification: zod.string().nullish(),
+      active: zod.boolean(),
+    }),
+  ),
+});
+
+/**
+ * @summary Manually retry pushing a posted JE to QuickBooks
+ */
+export const SyncQboJournalEntryParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const SyncQboJournalEntryResponse = zod.object({
+  qboId: zod.string().nullable(),
+  qboSyncStatus: zod
+    .union([
+      zod.literal("pending"),
+      zod.literal("syncing"),
+      zod.literal("synced"),
+      zod.literal("failed"),
+      zod.literal("skipped"),
+      zod.literal(null),
+    ])
+    .nullable(),
+});
+
+/**
  * @summary List all journal entries (posted and reversed) for a lease
  */
 export const GetLeaseJournalEntriesParams = zod.object({
@@ -432,6 +520,25 @@ export const GetLeaseJournalEntriesResponseItem = zod.object({
       "When set, this JE is the offsetting reversal of that original entry",
     ),
   memo: zod.string().nullish(),
+  qboId: zod
+    .string()
+    .nullish()
+    .describe("QuickBooks JournalEntry.Id once successfully pushed"),
+  qboSyncStatus: zod
+    .union([
+      zod.literal("pending"),
+      zod.literal("syncing"),
+      zod.literal("synced"),
+      zod.literal("failed"),
+      zod.literal("skipped"),
+      zod.literal(null),
+    ])
+    .nullish()
+    .describe(
+      "Best-effort QBO sync state. `null` = never attempted; `skipped` = no QBO connection at post time",
+    ),
+  qboSyncError: zod.string().nullish(),
+  qboSyncedAt: zod.coerce.date().nullish(),
   lines: zod.array(
     zod.object({
       id: zod.number(),

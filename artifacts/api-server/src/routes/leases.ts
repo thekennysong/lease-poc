@@ -35,6 +35,12 @@ import {
   periodLabelFromDate,
   validateAccountsForPost,
 } from "../lib/journal";
+import {
+  ensureValidConnection,
+  getConnection,
+  pushJournalEntry,
+  deleteJournalEntry,
+} from "../lib/qbo";
 
 const router: IRouter = Router();
 
@@ -619,6 +625,20 @@ router.post("/leases/:id/schedule/post", async (req, res): Promise<void> => {
     return;
   }
 
+  // Capture the newly-created JEs so we can push them to QBO after commit.
+  // QBO sync runs OUTSIDE the transaction because it makes external HTTP calls
+  // and we don't want a slow/failed QBO push to roll back a successful local
+  // close. Sync state is recorded back on each JE row independently.
+  type NewJe = {
+    id: number;
+    leaseId: number;
+    period: string;
+    paymentDate: string;
+    memo: string | null;
+    lines: { accountCode: string; debit: string; credit: string; memo: string | null }[];
+  };
+  const newJes: NewJe[] = [];
+
   await db.transaction(async (tx) => {
     // Lock draft rows for the duration of the transaction so concurrent posts
     // can't both observe the same drafts and double-insert JEs.
@@ -691,11 +711,108 @@ router.post("/leases/:id/schedule/post", async (req, res): Promise<void> => {
         .update(scheduleEntriesTable)
         .set({ status: "posted" })
         .where(eq(scheduleEntriesTable.id, entry.id));
+
+      newJes.push({
+        id: je.id,
+        leaseId,
+        period: periodLabel,
+        paymentDate: entry.paymentDate,
+        memo: je.memo,
+        lines: lines.map((l) => ({
+          accountCode: l.accountCode,
+          debit: l.debit,
+          credit: l.credit,
+          memo: l.memo,
+        })),
+      });
     }
   });
 
+  // Best-effort QBO sync. Each JE updates its own qboSyncStatus row; failures
+  // are logged but never fail the request — the local close is already done.
+  await syncJesToQbo(req, lease, newJes);
+
   await returnSchedule(res, leaseId);
 });
+
+/**
+ * Push each freshly-posted JE to QBO. Marks every row with a sync status:
+ *   - skipped: no QBO connection
+ *   - synced:  successfully created in QBO (qboId stored)
+ *   - failed:  push errored (error message stored)
+ *
+ * Failures here do NOT roll back the local post — the user can retry from the
+ * JE row in the UI via POST /qbo/journal-entries/:id/sync.
+ */
+async function syncJesToQbo(
+  req: import("express").Request,
+  lease: typeof leasesTable.$inferSelect,
+  jes: Array<{
+    id: number;
+    leaseId: number;
+    period: string;
+    paymentDate: string;
+    memo: string | null;
+    lines: { accountCode: string; debit: string; credit: string; memo: string | null }[];
+  }>,
+): Promise<void> {
+  if (jes.length === 0) return;
+
+  const existing = await getConnection();
+  if (!existing) {
+    await db
+      .update(journalEntriesTable)
+      .set({ qboSyncStatus: "skipped" })
+      .where(inArray(journalEntriesTable.id, jes.map((j) => j.id)));
+    return;
+  }
+
+  let conn;
+  try {
+    conn = await ensureValidConnection();
+  } catch (err) {
+    const message = (err as Error).message;
+    req.log.warn({ err }, "QBO connection unavailable; marking JEs as failed");
+    await db
+      .update(journalEntriesTable)
+      .set({ qboSyncStatus: "failed", qboSyncError: message })
+      .where(inArray(journalEntriesTable.id, jes.map((j) => j.id)));
+    return;
+  }
+
+  for (const je of jes) {
+    try {
+      const result = await pushJournalEntry(conn, {
+        txnDate: je.paymentDate,
+        privateMemo: je.memo ?? `Lease ${lease.name} ${je.period}`,
+        docNumber: `LSE-${lease.id}-${je.period}`,
+        lines: je.lines.map((l) => ({
+          accountRefId: l.accountCode,
+          amount: parseFloat(l.debit) > 0 ? parseFloat(l.debit) : parseFloat(l.credit),
+          posting: parseFloat(l.debit) > 0 ? "Debit" : "Credit",
+          memo: l.memo ?? undefined,
+        })),
+      });
+      await db
+        .update(journalEntriesTable)
+        .set({
+          qboId: result.Id,
+          qboSyncToken: result.SyncToken,
+          qboSyncStatus: "synced",
+          qboSyncError: null,
+          qboSyncedAt: new Date(),
+        })
+        .where(eq(journalEntriesTable.id, je.id));
+    } catch (err) {
+      const message = (err as Error).message;
+      req.log.error({ err, journalEntryId: je.id }, "QBO JE push failed");
+      await db
+        .update(journalEntriesTable)
+        .set({ qboSyncStatus: "failed", qboSyncError: message })
+        .where(eq(journalEntriesTable.id, je.id));
+    }
+  }
+}
 
 // POST /leases/:id/schedule/unpost/:periodNumber — reverses the posted JE for
 // a single period: marks the original "reversed", creates a new offsetting
@@ -722,6 +839,23 @@ router.post("/leases/:id/schedule/unpost/:periodNumber", async (req, res): Promi
   type HttpError = { status: number; message: string };
   const errBox: { value: HttpError | null } = { value: null };
   const fail = (status: number, message: string) => { errBox.value = { status, message }; };
+
+  // Captured from the txn so we can perform the QBO leg AFTER commit:
+  //   - originalQboId/SyncToken: if set, delete the original JE in QBO
+  //   - reversal: push as a brand-new JE in QBO so books stay in sync
+  type Captured = {
+    originalQboId: string | null;
+    originalQboSyncToken: string | null;
+    reversal: {
+      id: number;
+      period: string;
+      paymentDate: string;
+      memo: string | null;
+      lines: { accountCode: string; debit: string; credit: string; memo: string | null }[];
+    } | null;
+  };
+  const captured: Captured = { originalQboId: null, originalQboSyncToken: null, reversal: null };
+
   await db.transaction(async (tx) => {
     const [entry] = await tx
       .select()
@@ -833,6 +967,22 @@ router.post("/leases/:id/schedule/unpost/:periodNumber", async (req, res): Promi
       .update(scheduleEntriesTable)
       .set({ status: "draft" })
       .where(eq(scheduleEntriesTable.id, entry.id));
+
+    // Capture for the post-commit QBO sync.
+    captured.originalQboId = original.qboId;
+    captured.originalQboSyncToken = original.qboSyncToken;
+    captured.reversal = {
+      id: reversal.id,
+      period: periodLabel,
+      paymentDate: entry.paymentDate,
+      memo: reversal.memo,
+      lines: reversed.map((l) => ({
+        accountCode: l.accountCode,
+        debit: l.debit,
+        credit: l.credit,
+        memo: l.memo,
+      })),
+    };
   });
 
   if (errBox.value) {
@@ -840,8 +990,114 @@ router.post("/leases/:id/schedule/unpost/:periodNumber", async (req, res): Promi
     return;
   }
 
+  // Best-effort QBO leg: delete the original JE in QBO (if it was synced) and
+  // push the new reversal JE. Failures are logged on the row but never block
+  // the local response — the unpost has already committed.
+  await syncReversalToQbo(req, lease, captured);
+
   await returnSchedule(res, leaseId);
 });
+
+/**
+ * QBO side of an unpost: delete the original JE in QBO if it was synced, then
+ * push the new offsetting JE so QBO mirrors our local "reversal entry" model.
+ *
+ * The original JE is deleted (not voided) because QBO doesn't expose a void
+ * concept on JEs and a hard delete + offsetting create most cleanly matches
+ * the user's mental model: "I unposted, then re-posted with corrections later".
+ */
+async function syncReversalToQbo(
+  req: import("express").Request,
+  lease: typeof leasesTable.$inferSelect,
+  captured: {
+    originalQboId: string | null;
+    originalQboSyncToken: string | null;
+    reversal: {
+      id: number;
+      period: string;
+      paymentDate: string;
+      memo: string | null;
+      lines: { accountCode: string; debit: string; credit: string; memo: string | null }[];
+    } | null;
+  },
+): Promise<void> {
+  if (!captured.reversal) return;
+  const reversal = captured.reversal;
+
+  const existing = await getConnection();
+  if (!existing) {
+    await db
+      .update(journalEntriesTable)
+      .set({ qboSyncStatus: "skipped" })
+      .where(eq(journalEntriesTable.id, reversal.id));
+    return;
+  }
+
+  let conn;
+  try {
+    conn = await ensureValidConnection();
+  } catch (err) {
+    const message = (err as Error).message;
+    req.log.warn({ err }, "QBO connection unavailable for reversal");
+    await db
+      .update(journalEntriesTable)
+      .set({ qboSyncStatus: "failed", qboSyncError: message })
+      .where(eq(journalEntriesTable.id, reversal.id));
+    return;
+  }
+
+  // 1. Delete the original in QBO. Idempotent: 610/Object Not Found is fine.
+  // If this fails for any *other* reason, we MUST NOT push the reversal — doing
+  // so would leave QBO with both the original AND a fresh "reversal" JE, which
+  // would double-count the lease activity. Mark the reversal row failed and
+  // bail; the user can use the manual retry once the QBO state is sorted out
+  // (e.g. they delete the original in QBO themselves, or fix permissions).
+  if (captured.originalQboId && captured.originalQboSyncToken) {
+    try {
+      await deleteJournalEntry(conn, captured.originalQboId, captured.originalQboSyncToken);
+    } catch (err) {
+      const message = `QBO delete of original JE ${captured.originalQboId} failed: ${(err as Error).message}`;
+      req.log.error({ err, qboId: captured.originalQboId }, "QBO delete original JE failed");
+      await db
+        .update(journalEntriesTable)
+        .set({ qboSyncStatus: "failed", qboSyncError: message })
+        .where(eq(journalEntriesTable.id, reversal.id));
+      return;
+    }
+  }
+
+  // 2. Push the reversal as a fresh JE.
+  try {
+    const result = await pushJournalEntry(conn, {
+      txnDate: reversal.paymentDate,
+      privateMemo: reversal.memo ?? `Reversal ${reversal.period}`,
+      docNumber: `LSE-${lease.id}-${reversal.period}-REV`,
+      lines: reversal.lines.map((l) => ({
+        accountRefId: l.accountCode,
+        amount: parseFloat(l.debit) > 0 ? parseFloat(l.debit) : parseFloat(l.credit),
+        posting: parseFloat(l.debit) > 0 ? "Debit" : "Credit",
+        memo: l.memo ?? undefined,
+      })),
+    });
+    await db
+      .update(journalEntriesTable)
+      .set({
+        qboId: result.Id,
+        qboSyncToken: result.SyncToken,
+        qboSyncStatus: "synced",
+        qboSyncError: null,
+        qboSyncedAt: new Date(),
+      })
+      .where(eq(journalEntriesTable.id, reversal.id));
+  } catch (err) {
+    const message = (err as Error).message;
+    req.log.error({ err, journalEntryId: reversal.id }, "QBO reversal JE push failed");
+    await db
+      .update(journalEntriesTable)
+      .set({ qboSyncStatus: "failed", qboSyncError: message })
+      .where(eq(journalEntriesTable.id, reversal.id));
+  }
+}
 
 // GET /leases/:id/journal-entries — all JEs (posted and reversed) for a lease,
 // each with its lines. Ordered by postedAt asc.
@@ -894,6 +1150,10 @@ router.get("/leases/:id/journal-entries", async (req, res): Promise<void> => {
       idempotencyKey: e.idempotencyKey,
       reversesEntryId: e.reversesEntryId,
       memo: e.memo,
+      qboId: e.qboId,
+      qboSyncStatus: e.qboSyncStatus,
+      qboSyncError: e.qboSyncError,
+      qboSyncedAt: e.qboSyncedAt ? e.qboSyncedAt.toISOString() : null,
       lines: (linesByJe.get(e.id) ?? []).map((l) => ({
         id: l.id,
         journalEntryId: l.journalEntryId,

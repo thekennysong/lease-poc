@@ -93,6 +93,20 @@ export const journalEntryStatusEnum = pgEnum("journal_entry_status", [
  * "posted" JE with offsetting debits/credits, while the original is flipped to
  * "reversed".
  */
+/**
+ * QBO sync status for a journal entry. `null` (default) means not yet attempted
+ * because no QBO connection exists. Once a connection is set up, posting flips
+ * this to "pending" → "synced" or "failed". Sync failures don't roll back the
+ * local post — the local close completes; QBO sync is best-effort.
+ */
+export const qboSyncStatusEnum = pgEnum("qbo_sync_status", [
+  "pending",
+  "syncing",
+  "synced",
+  "failed",
+  "skipped",
+]);
+
 export const journalEntriesTable = pgTable("journal_entries", {
   id: serial("id").primaryKey(),
   leaseId: integer("lease_id").notNull().references(() => leasesTable.id, { onDelete: "cascade" }),
@@ -103,6 +117,11 @@ export const journalEntriesTable = pgTable("journal_entries", {
   idempotencyKey: text("idempotency_key").notNull(),
   reversesEntryId: integer("reverses_entry_id").references((): any => journalEntriesTable.id, { onDelete: "set null" }),
   memo: text("memo"),
+  qboId: text("qbo_id"),                                                          // QBO JournalEntry.Id
+  qboSyncToken: text("qbo_sync_token"),                                            // QBO optimistic-locking token
+  qboSyncStatus: qboSyncStatusEnum("qbo_sync_status"),                             // null until attempted
+  qboSyncError: text("qbo_sync_error"),                                            // last error message
+  qboSyncedAt: timestamp("qbo_synced_at", { withTimezone: true }),
 }, (t) => ({
   idempotencyKeyIdx: uniqueIndex("journal_entries_idempotency_key_idx").on(t.idempotencyKey),
 }));
@@ -144,3 +163,69 @@ export type InsertScheduleEntry = z.infer<typeof insertScheduleEntrySchema>;
 export type ScheduleEntry = typeof scheduleEntriesTable.$inferSelect;
 
 export type AppSettings = typeof appSettingsTable.$inferSelect;
+
+export const qboEnvironmentEnum = pgEnum("qbo_environment", [
+  "sandbox",
+  "production",
+]);
+
+/**
+ * Singleton QBO connection (always id=1). Stores the OAuth tokens and the
+ * QBO realm (company) the tokens are scoped to. Only one connection at a
+ * time — connecting again replaces the existing row.
+ *
+ * Token lifecycles:
+ *   - access token: ~1 hour
+ *   - refresh token: 100 days, rotated on every refresh response
+ */
+export const qboConnectionsTable = pgTable("qbo_connections", {
+  id: serial("id").primaryKey(),
+  realmId: text("realm_id").notNull(),
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token").notNull(),
+  accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }).notNull(),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { withTimezone: true }).notNull(),
+  environment: qboEnvironmentEnum("environment").notNull().default("sandbox"),
+  scope: text("scope"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+/**
+ * Cached QuickBooks Chart of Accounts. Refreshed on demand (the GET /qbo/accounts
+ * endpoint repulls from QBO and upserts). The lease GL-account fields store the
+ * QBO Account.Id (text) — a foreign-ish reference into this table when QBO is
+ * connected. We keep `acctNum` and `name` for display.
+ */
+export const qboAccountsTable = pgTable("qbo_accounts", {
+  id: serial("id").primaryKey(),
+  realmId: text("realm_id").notNull(),
+  qboId: text("qbo_id").notNull(),
+  acctNum: text("acct_num"),
+  name: text("name").notNull(),
+  fullyQualifiedName: text("fully_qualified_name"),
+  accountType: text("account_type"),
+  accountSubType: text("account_sub_type"),
+  classification: text("classification"),
+  active: boolean("active").notNull().default(true),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  realmQboIdIdx: uniqueIndex("qbo_accounts_realm_qbo_id_idx").on(t.realmId, t.qboId),
+}));
+
+/**
+ * Short-lived OAuth `state` values for CSRF protection. Created when the user
+ * clicks "Connect QBO", consumed (deleted) by the callback. Old rows past
+ * `expiresAt` are stale and rejected.
+ */
+export const qboOauthStatesTable = pgTable("qbo_oauth_states", {
+  id: serial("id").primaryKey(),
+  state: text("state").notNull().unique(),
+  environment: qboEnvironmentEnum("environment").notNull().default("sandbox"),
+  redirectUri: text("redirect_uri").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
+
+export type QboConnection = typeof qboConnectionsTable.$inferSelect;
+export type QboAccount = typeof qboAccountsTable.$inferSelect;

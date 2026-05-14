@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, ArrowLeft, Info, Undo2, AlertTriangle } from "lucide-react";
+import { ChevronRight, ArrowLeft, Info, Undo2, AlertTriangle, CheckCircle2, RefreshCw, CloudOff, XCircle } from "lucide-react";
 import {
   useGetLease,
   getGetLeaseQueryKey,
@@ -11,6 +11,7 @@ import {
   getGetLeaseJournalEntriesQueryKey,
   getListLeasesQueryKey,
   getGetLeasesSummaryQueryKey,
+  syncQboJournalEntry,
 } from "@workspace/api-client-react";
 
 import { Layout } from "@/components/Layout";
@@ -71,6 +72,23 @@ export default function LeaseDetailPage() {
       queryKey: getGetLeaseJournalEntriesQueryKey(leaseId),
     },
   });
+
+  const [syncingJeId, setSyncingJeId] = useState<number | null>(null);
+
+  async function handleRetryQboSync(jeId: number) {
+    setSyncingJeId(jeId);
+    try {
+      await syncQboJournalEntry(jeId);
+      toast({ title: "Synced to QuickBooks" });
+      queryClient.invalidateQueries({ queryKey: getGetLeaseJournalEntriesQueryKey(leaseId) });
+    } catch (err) {
+      const message = (err as { data?: { error?: string }; message?: string }).data?.error
+        ?? (err as Error).message;
+      toast({ title: "QuickBooks sync failed", description: message, variant: "destructive" });
+    } finally {
+      setSyncingJeId(null);
+    }
+  }
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: getGetLeaseQueryKey(leaseId) });
@@ -460,8 +478,8 @@ export default function LeaseDetailPage() {
                           className="border rounded-md overflow-hidden"
                           data-testid={`je-${je.id}`}
                         >
-                          <div className="flex items-center justify-between px-4 py-3 bg-muted/40 border-b">
-                            <div className="flex items-center gap-3">
+                          <div className="flex items-center justify-between px-4 py-3 bg-muted/40 border-b gap-3">
+                            <div className="flex items-center gap-3 flex-wrap">
                               <span className="text-sm font-mono text-muted-foreground">JE #{je.id}</span>
                               <span className="text-sm font-medium">{je.period}</span>
                               <Badge
@@ -475,6 +493,7 @@ export default function LeaseDetailPage() {
                                   reverses JE #{je.reversesEntryId}
                                 </span>
                               )}
+                              <QboJeBadge je={je} onRetry={handleRetryQboSync} />
                             </div>
                             <span className="text-xs text-muted-foreground">
                               {formatDate(je.postedAt)}
@@ -557,5 +576,69 @@ export default function LeaseDetailPage() {
         </DialogContent>
       </Dialog>
     </Layout>
+  );
+}
+
+/**
+ * Visual indicator of where a JE stands with QuickBooks. The four meaningful
+ * states map to:
+ *   - synced  → green check + QBO Id
+ *   - failed  → red badge with retry button (tooltip carries the error text)
+ *   - skipped → muted "QBO off" chip (no connection at the time of post)
+ *   - null    → nothing (legacy JE created before integration existed)
+ */
+function QboJeBadge(props: {
+  je: {
+    id: number;
+    qboId?: string | null;
+    qboSyncStatus?: string | null;
+    qboSyncError?: string | null;
+  };
+  onRetry: (id: number) => void;
+}) {
+  const { je } = props;
+  const status = je.qboSyncStatus;
+  if (!status) return null;
+
+  if (status === "synced") {
+    return (
+      <Badge variant="outline" className="gap-1 border-green-300 text-green-700 dark:border-green-800 dark:text-green-300" title={`QBO Id ${je.qboId ?? ""}`}>
+        <CheckCircle2 className="h-3 w-3" />
+        QBO #{je.qboId}
+      </Badge>
+    );
+  }
+  if (status === "skipped") {
+    return (
+      <Badge variant="outline" className="gap-1 text-muted-foreground" title="QuickBooks was not connected when this JE was posted">
+        <CloudOff className="h-3 w-3" />
+        QBO off
+      </Badge>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <span className="flex items-center gap-1.5">
+        <Badge variant="outline" className="gap-1 border-red-300 text-red-700 dark:border-red-800 dark:text-red-300" title={je.qboSyncError ?? "QBO sync failed"}>
+          <XCircle className="h-3 w-3" />
+          QBO failed
+        </Badge>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-xs gap-1"
+          onClick={() => props.onRetry(je.id)}
+          data-testid={`button-qbo-retry-${je.id}`}
+        >
+          <RefreshCw className="h-3 w-3" />
+          Retry
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <Badge variant="outline" className="gap-1 text-muted-foreground">
+      QBO {status}
+    </Badge>
   );
 }

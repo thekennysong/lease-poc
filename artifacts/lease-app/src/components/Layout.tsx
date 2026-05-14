@@ -1,19 +1,23 @@
 import { Link } from "wouter";
 import { Calculator } from "lucide-react";
+import { QboConnect } from "@/components/QboConnect";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-[100dvh] flex flex-col bg-background text-foreground">
       <header className="border-b bg-card">
-        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="container mx-auto px-4 h-16 flex items-center justify-between gap-4">
           <Link href="/" className="flex items-center gap-2 text-primary font-semibold">
             <div className="w-8 h-8 rounded bg-primary text-primary-foreground flex items-center justify-center">
               <Calculator className="w-5 h-5" />
             </div>
             <span>Double</span>
           </Link>
-          <div className="text-sm text-muted-foreground font-medium">
-            Lease Capitalization
+          <div className="flex items-center gap-3">
+            <div className="text-sm text-muted-foreground font-medium hidden sm:block">
+              Lease Capitalization
+            </div>
+            <QboConnect />
           </div>
         </div>
       </header>

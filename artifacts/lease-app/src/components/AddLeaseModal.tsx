@@ -4,7 +4,13 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { format } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCreateLease, getListLeasesQueryKey, getGetLeasesSummaryQueryKey } from "@workspace/api-client-react";
+import {
+  useCreateLease,
+  getListLeasesQueryKey,
+  getGetLeasesSummaryQueryKey,
+  useGetQboAccounts,
+  getGetQboAccountsQueryKey,
+} from "@workspace/api-client-react";
 import { CalendarIcon, Calculator, AlertTriangle, ChevronDown, Info } from "lucide-react";
 
 import {
@@ -98,11 +104,70 @@ interface AddLeaseModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
+/**
+ * GL account input. When QuickBooks is connected and the chart of accounts
+ * has been pulled, render a Select sourced from the cached COA — the form
+ * value becomes the QBO Account.Id (so the post-time JE push has a direct
+ * AccountRef). Otherwise fall back to a free-form text input so the app is
+ * still usable without QBO.
+ */
+function AccountField(props: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  testId: string;
+  accounts: Array<{ qboId: string; acctNum?: string | null; name: string; accountType?: string | null; active: boolean }>;
+}) {
+  if (props.accounts.length === 0) {
+    return (
+      <Input
+        placeholder={props.placeholder}
+        data-testid={props.testId}
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+      />
+    );
+  }
+  // The stored value might be a legacy account code (e.g. "1800") that doesn't
+  // match a QBO Id — show it as a sentinel item so the user knows to re-pick.
+  const known = props.accounts.some((a) => a.qboId === props.value);
+  return (
+    <Select onValueChange={props.onChange} value={props.value || ""}>
+      <SelectTrigger data-testid={props.testId}>
+        <SelectValue placeholder="Select QBO account…" />
+      </SelectTrigger>
+      <SelectContent className="max-h-72">
+        {!known && props.value && (
+          <SelectItem value={props.value} disabled>
+            ⚠ Legacy: {props.value}
+          </SelectItem>
+        )}
+        {props.accounts
+          .filter((a) => a.active)
+          .map((a) => (
+            <SelectItem key={a.qboId} value={a.qboId}>
+              {a.acctNum ? `${a.acctNum} — ${a.name}` : a.name}
+              {a.accountType ? ` (${a.accountType})` : ""}
+            </SelectItem>
+          ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const createLease = useCreateLease();
   const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // Pulled lazily — fails silently with `undefined` when QBO isn't connected
+  // (the GET returns 400). The form falls back to plain text inputs in that
+  // case, so the modal is still fully usable.
+  const { data: qboAccountsData } = useGetQboAccounts({
+    query: { queryKey: getGetQboAccountsQueryKey(), retry: false, throwOnError: false },
+  });
+  const qboAccounts = qboAccountsData?.accounts ?? [];
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -637,73 +702,43 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                   {/* Right column — GL accounts */}
                   <div className="space-y-6">
                     <div className="flex flex-col gap-4">
-                      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">GL Accounts</h3>
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">GL Accounts</h3>
+                        {qboAccounts.length > 0 && (
+                          <span className="text-xs text-muted-foreground">From QuickBooks ({qboAccounts.length})</span>
+                        )}
+                      </div>
                       <div className="grid grid-cols-1 gap-4">
-                        <FormField
-                          control={form.control}
-                          name="rouAssetAccount"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>ROU Asset Account</FormLabel>
-                              <FormControl>
-                                <Input placeholder="15000" data-testid="input-rou-acc" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        <FormField
-                          control={form.control}
-                          name="leaseLiabilityAccount"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Lease Liability Account</FormLabel>
-                              <FormControl>
-                                <Input placeholder="25000" data-testid="input-liability-acc" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        <FormField
-                          control={form.control}
-                          name="interestExpenseAccount"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Interest Expense Account</FormLabel>
-                              <FormControl>
-                                <Input placeholder="71000" data-testid="input-interest-acc" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        <FormField
-                          control={form.control}
-                          name="amortizationExpenseAccount"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Amortization Expense Account</FormLabel>
-                              <FormControl>
-                                <Input placeholder="72000" data-testid="input-amortization-acc" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        <FormField
-                          control={form.control}
-                          name="cashAccount"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Cash / Bank Account</FormLabel>
-                              <FormControl>
-                                <Input placeholder="10000" data-testid="input-cash-acc" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
+                        {(
+                          [
+                            { name: "rouAssetAccount", label: "ROU Asset Account", placeholder: "15000", testId: "input-rou-acc" },
+                            { name: "leaseLiabilityAccount", label: "Lease Liability Account", placeholder: "25000", testId: "input-liability-acc" },
+                            { name: "interestExpenseAccount", label: "Interest Expense Account", placeholder: "71000", testId: "input-interest-acc" },
+                            { name: "amortizationExpenseAccount", label: "Amortization Expense Account", placeholder: "72000", testId: "input-amortization-acc" },
+                            { name: "cashAccount", label: "Cash / Bank Account", placeholder: "10000", testId: "input-cash-acc" },
+                          ] as const
+                        ).map((cfg) => (
+                          <FormField
+                            key={cfg.name}
+                            control={form.control}
+                            name={cfg.name}
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>{cfg.label}</FormLabel>
+                                <FormControl>
+                                  <AccountField
+                                    value={field.value ?? ""}
+                                    onChange={field.onChange}
+                                    placeholder={cfg.placeholder}
+                                    testId={cfg.testId}
+                                    accounts={qboAccounts}
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        ))}
                       </div>
                     </div>
                   </div>

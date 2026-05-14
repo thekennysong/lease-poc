@@ -11,6 +11,8 @@ tags:
     description: Health operations
   - name: leases
     description: Lease capitalization operations
+  - name: qbo
+    description: QuickBooks Online integration
 paths:
   /healthz:
     get:
@@ -261,6 +263,124 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Lease or period not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /qbo/status:
+    get:
+      operationId: getQboStatus
+      tags: [qbo]
+      summary: Get the current QuickBooks connection state
+      responses:
+        "200":
+          description: Connection status (always returns 200; check `connected`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QboStatus"
+
+  /qbo/disconnect:
+    post:
+      operationId: disconnectQbo
+      tags: [qbo]
+      summary: Disconnect QBO and wipe stored tokens + cached COA
+      responses:
+        "200":
+          description: Disconnected
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [disconnected]
+                properties:
+                  disconnected:
+                    type: boolean
+
+  /qbo/accounts:
+    get:
+      operationId: getQboAccounts
+      tags: [qbo]
+      summary: Cached QuickBooks chart of accounts
+      responses:
+        "200":
+          description: Cached COA
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QboAccountsResponse"
+        "400":
+          description: Not connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /qbo/accounts/refresh:
+    post:
+      operationId: refreshQboAccounts
+      tags: [qbo]
+      summary: Re-pull chart of accounts from QuickBooks
+      responses:
+        "200":
+          description: Refreshed COA
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QboAccountsResponse"
+        "400":
+          description: Not connected or refresh token expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: QuickBooks API error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /qbo/journal-entries/{id}/sync:
+    post:
+      operationId: syncQboJournalEntry
+      tags: [qbo]
+      summary: Manually retry pushing a posted JE to QuickBooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Synced
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [qboId, qboSyncStatus]
+                properties:
+                  qboId:
+                    type: ["string", "null"]
+                  qboSyncStatus:
+                    type: ["string", "null"]
+                    enum: [pending, syncing, synced, failed, skipped, null]
+        "400":
+          description: Already synced or bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: QuickBooks API error
           content:
             application/json:
               schema:
@@ -704,10 +824,85 @@ components:
           description: When set, this JE is the offsetting reversal of that original entry
         memo:
           type: ["string", "null"]
+        qboId:
+          type: ["string", "null"]
+          description: QuickBooks JournalEntry.Id once successfully pushed
+        qboSyncStatus:
+          type: ["string", "null"]
+          enum: [pending, syncing, synced, failed, skipped, null]
+          description: Best-effort QBO sync state. `null` = never attempted; `skipped` = no QBO connection at post time
+        qboSyncError:
+          type: ["string", "null"]
+        qboSyncedAt:
+          type: ["string", "null"]
+          format: date-time
         lines:
           type: array
           items:
             $ref: "#/components/schemas/JournalEntryLine"
+
+    QboStatus:
+      type: object
+      required: [configured, connected]
+      properties:
+        configured:
+          type: boolean
+          description: True if QBO_CLIENT_ID and QBO_CLIENT_SECRET are set on the server
+        connected:
+          type: boolean
+        message:
+          type: string
+        realmId:
+          type: string
+        environment:
+          type: string
+          enum: [sandbox, production]
+        accessTokenExpiresAt:
+          type: string
+          format: date-time
+        refreshTokenExpiresAt:
+          type: string
+          format: date-time
+        connectedAt:
+          type: string
+          format: date-time
+
+    QboAccount:
+      type: object
+      required: [qboId, name, active]
+      properties:
+        qboId:
+          type: string
+        acctNum:
+          type: ["string", "null"]
+        name:
+          type: string
+        fullyQualifiedName:
+          type: ["string", "null"]
+        accountType:
+          type: ["string", "null"]
+        accountSubType:
+          type: ["string", "null"]
+        classification:
+          type: ["string", "null"]
+        active:
+          type: boolean
+
+    QboAccountsResponse:
+      type: object
+      required: [realmId, accounts]
+      properties:
+        realmId:
+          type: string
+        syncedAt:
+          type: ["string", "null"]
+          format: date-time
+        count:
+          type: integer
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/QboAccount"
 
     LeasesSummary:
       type: object

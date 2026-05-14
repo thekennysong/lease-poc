@@ -6,11 +6,13 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./disconnectQbo200";
 export * from "./errorResponse";
 export * from "./getLeasesSummaryParams";
 export * from "./healthStatus";
 export * from "./journalEntry";
 export * from "./journalEntryLine";
+export * from "./journalEntryQboSyncStatus";
 export * from "./journalEntryStatus";
 export * from "./lease";
 export * from "./leaseInput";
@@ -33,5 +35,11 @@ export * from "./leaseWithSchedulePaymentFrequency";
 export * from "./leaseWithSchedulePaymentTiming";
 export * from "./leaseWithScheduleStatus";
 export * from "./postPaymentsInput";
+export * from "./qboAccount";
+export * from "./qboAccountsResponse";
+export * from "./qboStatus";
+export * from "./qboStatusEnvironment";
 export * from "./scheduleEntry";
 export * from "./scheduleEntryStatus";
+export * from "./syncQboJournalEntry200";
+export * from "./syncQboJournalEntry200QboSyncStatus";

@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { JournalEntryLine } from "./journalEntryLine";
+import type { JournalEntryQboSyncStatus } from "./journalEntryQboSyncStatus";
 import type { JournalEntryStatus } from "./journalEntryStatus";
 
 export interface JournalEntry {
@@ -24,5 +25,19 @@ export interface JournalEntry {
   reversesEntryId?: number | null;
   /** @nullable */
   memo?: string | null;
+  /**
+   * QuickBooks JournalEntry.Id once successfully pushed
+   * @nullable
+   */
+  qboId?: string | null;
+  /**
+   * Best-effort QBO sync state. `null` = never attempted; `skipped` = no QBO connection at post time
+   * @nullable
+   */
+  qboSyncStatus?: JournalEntryQboSyncStatus;
+  /** @nullable */
+  qboSyncError?: string | null;
+  /** @nullable */
+  qboSyncedAt?: Date | null;
   lines: JournalEntryLine[];
 }

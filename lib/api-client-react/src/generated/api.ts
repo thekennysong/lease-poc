@@ -17,6 +17,7 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  DisconnectQbo200,
   ErrorResponse,
   GetLeasesSummaryParams,
   HealthStatus,
@@ -27,7 +28,10 @@ import type {
   LeaseWithSchedule,
   LeasesSummary,
   PostPaymentsInput,
+  QboAccountsResponse,
+  QboStatus,
   ScheduleEntry,
+  SyncQboJournalEntry200,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -895,6 +899,402 @@ export const useUnpostLeasePayment = <
   TContext
 > => {
   return useMutation(getUnpostLeasePaymentMutationOptions(options));
+};
+
+/**
+ * @summary Get the current QuickBooks connection state
+ */
+export const getGetQboStatusUrl = () => {
+  return `/api/qbo/status`;
+};
+
+export const getQboStatus = async (
+  options?: RequestInit,
+): Promise<QboStatus> => {
+  return customFetch<QboStatus>(getGetQboStatusUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetQboStatusQueryKey = () => {
+  return [`/api/qbo/status`] as const;
+};
+
+export const getGetQboStatusQueryOptions = <
+  TData = Awaited<ReturnType<typeof getQboStatus>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getQboStatus>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetQboStatusQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getQboStatus>>> = ({
+    signal,
+  }) => getQboStatus({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getQboStatus>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetQboStatusQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getQboStatus>>
+>;
+export type GetQboStatusQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get the current QuickBooks connection state
+ */
+
+export function useGetQboStatus<
+  TData = Awaited<ReturnType<typeof getQboStatus>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getQboStatus>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetQboStatusQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Disconnect QBO and wipe stored tokens + cached COA
+ */
+export const getDisconnectQboUrl = () => {
+  return `/api/qbo/disconnect`;
+};
+
+export const disconnectQbo = async (
+  options?: RequestInit,
+): Promise<DisconnectQbo200> => {
+  return customFetch<DisconnectQbo200>(getDisconnectQboUrl(), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getDisconnectQboMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof disconnectQbo>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof disconnectQbo>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["disconnectQbo"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof disconnectQbo>>,
+    void
+  > = () => {
+    return disconnectQbo(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DisconnectQboMutationResult = NonNullable<
+  Awaited<ReturnType<typeof disconnectQbo>>
+>;
+
+export type DisconnectQboMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Disconnect QBO and wipe stored tokens + cached COA
+ */
+export const useDisconnectQbo = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof disconnectQbo>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof disconnectQbo>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getDisconnectQboMutationOptions(options));
+};
+
+/**
+ * @summary Cached QuickBooks chart of accounts
+ */
+export const getGetQboAccountsUrl = () => {
+  return `/api/qbo/accounts`;
+};
+
+export const getQboAccounts = async (
+  options?: RequestInit,
+): Promise<QboAccountsResponse> => {
+  return customFetch<QboAccountsResponse>(getGetQboAccountsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetQboAccountsQueryKey = () => {
+  return [`/api/qbo/accounts`] as const;
+};
+
+export const getGetQboAccountsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getQboAccounts>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getQboAccounts>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetQboAccountsQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getQboAccounts>>> = ({
+    signal,
+  }) => getQboAccounts({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getQboAccounts>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetQboAccountsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getQboAccounts>>
+>;
+export type GetQboAccountsQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Cached QuickBooks chart of accounts
+ */
+
+export function useGetQboAccounts<
+  TData = Awaited<ReturnType<typeof getQboAccounts>>,
+  TError = ErrorType<ErrorResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getQboAccounts>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetQboAccountsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Re-pull chart of accounts from QuickBooks
+ */
+export const getRefreshQboAccountsUrl = () => {
+  return `/api/qbo/accounts/refresh`;
+};
+
+export const refreshQboAccounts = async (
+  options?: RequestInit,
+): Promise<QboAccountsResponse> => {
+  return customFetch<QboAccountsResponse>(getRefreshQboAccountsUrl(), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getRefreshQboAccountsMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof refreshQboAccounts>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof refreshQboAccounts>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["refreshQboAccounts"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof refreshQboAccounts>>,
+    void
+  > = () => {
+    return refreshQboAccounts(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RefreshQboAccountsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof refreshQboAccounts>>
+>;
+
+export type RefreshQboAccountsMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Re-pull chart of accounts from QuickBooks
+ */
+export const useRefreshQboAccounts = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof refreshQboAccounts>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof refreshQboAccounts>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getRefreshQboAccountsMutationOptions(options));
+};
+
+/**
+ * @summary Manually retry pushing a posted JE to QuickBooks
+ */
+export const getSyncQboJournalEntryUrl = (id: number) => {
+  return `/api/qbo/journal-entries/${id}/sync`;
+};
+
+export const syncQboJournalEntry = async (
+  id: number,
+  options?: RequestInit,
+): Promise<SyncQboJournalEntry200> => {
+  return customFetch<SyncQboJournalEntry200>(getSyncQboJournalEntryUrl(id), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getSyncQboJournalEntryMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof syncQboJournalEntry>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof syncQboJournalEntry>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  const mutationKey = ["syncQboJournalEntry"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof syncQboJournalEntry>>,
+    { id: number }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return syncQboJournalEntry(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SyncQboJournalEntryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof syncQboJournalEntry>>
+>;
+
+export type SyncQboJournalEntryMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Manually retry pushing a posted JE to QuickBooks
+ */
+export const useSyncQboJournalEntry = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof syncQboJournalEntry>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof syncQboJournalEntry>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  return useMutation(getSyncQboJournalEntryMutationOptions(options));
 };
 
 /**

@@ -340,6 +340,22 @@ export const JournalEntryStatus = {
   reversed: "reversed",
 } as const;
 
+/**
+ * Best-effort QBO sync state. `null` = never attempted; `skipped` = no QBO connection at post time
+ * @nullable
+ */
+export type JournalEntryQboSyncStatus =
+  | (typeof JournalEntryQboSyncStatus)[keyof typeof JournalEntryQboSyncStatus]
+  | null;
+
+export const JournalEntryQboSyncStatus = {
+  pending: "pending",
+  syncing: "syncing",
+  synced: "synced",
+  failed: "failed",
+  skipped: "skipped",
+} as const;
+
 export interface JournalEntry {
   id: number;
   leaseId: number;
@@ -356,7 +372,65 @@ export interface JournalEntry {
   reversesEntryId?: number | null;
   /** @nullable */
   memo?: string | null;
+  /**
+   * QuickBooks JournalEntry.Id once successfully pushed
+   * @nullable
+   */
+  qboId?: string | null;
+  /**
+   * Best-effort QBO sync state. `null` = never attempted; `skipped` = no QBO connection at post time
+   * @nullable
+   */
+  qboSyncStatus?: JournalEntryQboSyncStatus;
+  /** @nullable */
+  qboSyncError?: string | null;
+  /** @nullable */
+  qboSyncedAt?: string | null;
   lines: JournalEntryLine[];
+}
+
+export type QboStatusEnvironment =
+  (typeof QboStatusEnvironment)[keyof typeof QboStatusEnvironment];
+
+export const QboStatusEnvironment = {
+  sandbox: "sandbox",
+  production: "production",
+} as const;
+
+export interface QboStatus {
+  /** True if QBO_CLIENT_ID and QBO_CLIENT_SECRET are set on the server */
+  configured: boolean;
+  connected: boolean;
+  message?: string;
+  realmId?: string;
+  environment?: QboStatusEnvironment;
+  accessTokenExpiresAt?: string;
+  refreshTokenExpiresAt?: string;
+  connectedAt?: string;
+}
+
+export interface QboAccount {
+  qboId: string;
+  /** @nullable */
+  acctNum?: string | null;
+  name: string;
+  /** @nullable */
+  fullyQualifiedName?: string | null;
+  /** @nullable */
+  accountType?: string | null;
+  /** @nullable */
+  accountSubType?: string | null;
+  /** @nullable */
+  classification?: string | null;
+  active: boolean;
+}
+
+export interface QboAccountsResponse {
+  realmId: string;
+  /** @nullable */
+  syncedAt?: string | null;
+  count?: number;
+  accounts: QboAccount[];
 }
 
 export interface LeasesSummary {
@@ -372,4 +446,30 @@ export type GetLeasesSummaryParams = {
    * @maximum 12
    */
   fiscalYearStartMonth?: number;
+};
+
+export type DisconnectQbo200 = {
+  disconnected: boolean;
+};
+
+/**
+ * @nullable
+ */
+export type SyncQboJournalEntry200QboSyncStatus =
+  | (typeof SyncQboJournalEntry200QboSyncStatus)[keyof typeof SyncQboJournalEntry200QboSyncStatus]
+  | null;
+
+export const SyncQboJournalEntry200QboSyncStatus = {
+  pending: "pending",
+  syncing: "syncing",
+  synced: "synced",
+  failed: "failed",
+  skipped: "skipped",
+} as const;
+
+export type SyncQboJournalEntry200 = {
+  /** @nullable */
+  qboId: string | null;
+  /** @nullable */
+  qboSyncStatus: SyncQboJournalEntry200QboSyncStatus;
 };

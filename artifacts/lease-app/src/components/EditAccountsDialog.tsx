@@ -98,6 +98,21 @@ export function EditAccountsDialog({
   });
   const qboAccounts = qboAccountsData?.accounts ?? [];
 
+  // If the stored value is a QBO account number (the human-readable code,
+  // e.g. "1800") rather than the QBO internal Id (e.g. "33"), look it up by
+  // AcctNum. Falls back to a case-insensitive name match so manually-typed
+  // account names also resolve. Returns the original value if nothing matches.
+  function resolveToQboId(stored: string): string {
+    if (!stored) return stored;
+    if (qboAccounts.some((a) => a.qboId === stored)) return stored;
+    const byNum = qboAccounts.find((a) => a.acctNum && a.acctNum === stored);
+    if (byNum) return byNum.qboId;
+    const lc = stored.toLowerCase();
+    const byName = qboAccounts.find((a) => a.name.toLowerCase() === lc);
+    if (byName) return byName.qboId;
+    return stored;
+  }
+
   const [values, setValues] = useState<Record<AccountField, string>>({
     rouAssetAccount: lease.rouAssetAccount ?? "",
     leaseLiabilityAccount: lease.leaseLiabilityAccount ?? "",
@@ -105,19 +120,36 @@ export function EditAccountsDialog({
     amortizationExpenseAccount: lease.amortizationExpenseAccount ?? "",
     cashAccount: lease.cashAccount ?? "",
   });
+  // Track which fields we auto-resolved from a legacy code so we can show a
+  // hint banner. Cleared on every reseed.
+  const [autoResolved, setAutoResolved] = useState<AccountField[]>([]);
 
-  // Re-seed when the lease prop changes (e.g. after another edit refetches it).
+  // Re-seed when the lease prop changes or COA finishes loading. The
+  // resolution depends on `qboAccounts`, so we re-run it once accounts are
+  // available — otherwise the first render (with an empty COA) would leave
+  // every value untouched and the user would still see "Legacy: 1800".
   useEffect(() => {
-    if (open) {
-      setValues({
-        rouAssetAccount: lease.rouAssetAccount ?? "",
-        leaseLiabilityAccount: lease.leaseLiabilityAccount ?? "",
-        interestExpenseAccount: lease.interestExpenseAccount ?? "",
-        amortizationExpenseAccount: lease.amortizationExpenseAccount ?? "",
-        cashAccount: lease.cashAccount ?? "",
-      });
+    if (!open) return;
+    const raw: Record<AccountField, string> = {
+      rouAssetAccount: lease.rouAssetAccount ?? "",
+      leaseLiabilityAccount: lease.leaseLiabilityAccount ?? "",
+      interestExpenseAccount: lease.interestExpenseAccount ?? "",
+      amortizationExpenseAccount: lease.amortizationExpenseAccount ?? "",
+      cashAccount: lease.cashAccount ?? "",
+    };
+    const resolved: Record<AccountField, string> = { ...raw };
+    const changed: AccountField[] = [];
+    for (const f of FIELDS) {
+      const next = resolveToQboId(raw[f.key]);
+      if (next !== raw[f.key]) {
+        resolved[f.key] = next;
+        changed.push(f.key);
+      }
     }
-  }, [open, lease]);
+    setValues(resolved);
+    setAutoResolved(changed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, lease, qboAccounts.length]);
 
   function handleSave() {
     updateLease.mutate(
@@ -159,6 +191,11 @@ export function EditAccountsDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
+          {autoResolved.length > 0 && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-100">
+              Matched {autoResolved.length} field{autoResolved.length === 1 ? "" : "s"} to your QuickBooks chart of accounts by account number. Click <strong>Save</strong> to apply.
+            </div>
+          )}
           {FIELDS.map((f) => (
             <div key={f.key} className="space-y-2">
               <Label>{f.label}</Label>

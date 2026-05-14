@@ -12,7 +12,7 @@
  */
 
 import { Router, type IRouter } from "express";
-import { eq, asc, and, isNull, ne } from "drizzle-orm";
+import { eq, asc, and, or, isNull, ne } from "drizzle-orm";
 import {
   db,
   qboAccountsTable,
@@ -264,6 +264,10 @@ router.post("/qbo/journal-entries/:id/sync", async (req, res): Promise<void> => 
   // status to "syncing" only if it is currently null/failed/skipped/pending
   // AND qboId is still NULL. The row this UPDATE returns is the one we own;
   // if zero rows return, somebody else is already pushing.
+  //
+  // The `or(isNull(...), ne(...))` is required because in SQL three-valued
+  // logic `qbo_sync_status != 'syncing'` evaluates to NULL (not TRUE) when
+  // the column is NULL, which would silently exclude every never-attempted JE.
   const [claimed] = await db
     .update(journalEntriesTable)
     .set({ qboSyncStatus: "syncing", qboSyncError: null })
@@ -271,7 +275,10 @@ router.post("/qbo/journal-entries/:id/sync", async (req, res): Promise<void> => 
       and(
         eq(journalEntriesTable.id, id),
         isNull(journalEntriesTable.qboId),
-        ne(journalEntriesTable.qboSyncStatus, "syncing"),
+        or(
+          isNull(journalEntriesTable.qboSyncStatus),
+          ne(journalEntriesTable.qboSyncStatus, "syncing"),
+        ),
       ),
     )
     .returning();
@@ -365,6 +372,10 @@ router.post("/qbo/journal-entries/sync-all", async (req, res): Promise<void> => 
   // Candidates: any JE in `posted` status without a qboId. We deliberately
   // exclude `reversed` rows (they were superseded by an offsetting JE) and
   // anything currently `syncing` (another worker has the claim).
+  // `or(isNull(...), ne(...))` rather than a bare `ne(...)` because in SQL
+  // three-valued logic `qbo_sync_status != 'syncing'` is NULL (not TRUE) when
+  // the column is NULL — which would silently filter out every JE that has
+  // never been attempted (the entire backfill scenario).
   const candidates = await db
     .select()
     .from(journalEntriesTable)
@@ -372,7 +383,10 @@ router.post("/qbo/journal-entries/sync-all", async (req, res): Promise<void> => 
       and(
         eq(journalEntriesTable.status, "posted"),
         isNull(journalEntriesTable.qboId),
-        ne(journalEntriesTable.qboSyncStatus, "syncing"),
+        or(
+          isNull(journalEntriesTable.qboSyncStatus),
+          ne(journalEntriesTable.qboSyncStatus, "syncing"),
+        ),
       ),
     )
     .orderBy(asc(journalEntriesTable.postedAt));
@@ -390,7 +404,10 @@ router.post("/qbo/journal-entries/sync-all", async (req, res): Promise<void> => 
         and(
           eq(journalEntriesTable.id, je.id),
           isNull(journalEntriesTable.qboId),
-          ne(journalEntriesTable.qboSyncStatus, "syncing"),
+          or(
+            isNull(journalEntriesTable.qboSyncStatus),
+            ne(journalEntriesTable.qboSyncStatus, "syncing"),
+          ),
         ),
       )
       .returning();

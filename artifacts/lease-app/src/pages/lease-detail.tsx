@@ -80,15 +80,26 @@ export default function LeaseDetailPage() {
   const { data: qboStatus } = useGetQboStatus({
     query: { queryKey: getGetQboStatusQueryKey() },
   });
-  // QBO transaction deep-link base. Sandbox and production use different hosts.
-  const qboBase = qboStatus?.connected
+  // QBO transaction deep-link. The web-app host is `app.qbo.intuit.com`
+  // (production) or `app.sandbox.qbo.intuit.com` (sandbox) — NOT
+  // `qbo.intuit.com`/`sandbox.qbo.intuit.com`, which won't resolve to the JE
+  // page. When realmId is known we use the canonical `switchCompany` pattern
+  // so the link reliably routes a user with multiple authorized companies to
+  // the correct one before opening the JE.
+  const qboHost = qboStatus?.connected
     ? (qboStatus.environment === "production"
-        ? "https://qbo.intuit.com"
-        : "https://sandbox.qbo.intuit.com")
+        ? "https://app.qbo.intuit.com"
+        : "https://app.sandbox.qbo.intuit.com")
     : null;
+  const qboBase = qboHost; // kept for downstream "is link clickable" checks
   function qboJeUrl(qboId: string): string | null {
-    if (!qboBase) return null;
-    return `${qboBase}/app/journalentry?txnId=${encodeURIComponent(qboId)}`;
+    if (!qboHost) return null;
+    const realmId = qboStatus?.realmId;
+    if (realmId) {
+      const navUrl = `journal?txnId=${encodeURIComponent(qboId)}`;
+      return `${qboHost}/app/switchCompany?companyId=${encodeURIComponent(realmId)}&navigationURL=${encodeURIComponent(navUrl)}`;
+    }
+    return `${qboHost}/app/journalentry?txnId=${encodeURIComponent(qboId)}`;
   }
   // Map of schedule entry id → the qboId of the latest non-reversed JE for
   // that schedule row. Used to deep-link the "posted" status badge in the
@@ -556,7 +567,7 @@ export default function LeaseDetailPage() {
                                   reverses JE #{je.reversesEntryId}
                                 </span>
                               )}
-                              <QboJeBadge je={je} onRetry={handleRetryQboSync} qboBase={qboBase} />
+                              <QboJeBadge je={je} onRetry={handleRetryQboSync} qboBase={qboBase} qboJeUrl={qboJeUrl} />
                             </div>
                             <span className="text-xs text-muted-foreground">
                               {formatDate(je.postedAt)}
@@ -665,23 +676,25 @@ function QboJeBadge(props: {
   };
   onRetry: (id: number) => void;
   qboBase: string | null;
+  qboJeUrl: (qboId: string) => string | null;
 }) {
-  const { je, qboBase } = props;
+  const { je, qboBase, qboJeUrl } = props;
   const status = je.qboSyncStatus;
   if (!status) return null;
 
   if (status === "synced") {
+    const href = je.qboId ? qboJeUrl(je.qboId) : null;
     const badge = (
-      <Badge variant="outline" className={`gap-1 border-green-300 text-green-700 dark:border-green-800 dark:text-green-300 ${qboBase ? "cursor-pointer hover:underline" : ""}`} title={`QBO Id ${je.qboId ?? ""}`}>
+      <Badge variant="outline" className={`gap-1 border-green-300 text-green-700 dark:border-green-800 dark:text-green-300 ${href ? "cursor-pointer hover:underline" : ""}`} title={`QBO Id ${je.qboId ?? ""}`}>
         <CheckCircle2 className="h-3 w-3" />
         QBO #{je.qboId}
-        {qboBase && <span className="ml-0.5 opacity-70">↗</span>}
+        {href && <span className="ml-0.5 opacity-70">↗</span>}
       </Badge>
     );
-    if (qboBase && je.qboId) {
+    if (href) {
       return (
         <a
-          href={`${qboBase}/app/journalentry?txnId=${encodeURIComponent(je.qboId)}`}
+          href={href}
           target="_blank"
           rel="noopener noreferrer"
           data-testid={`link-qbo-je-${je.id}`}

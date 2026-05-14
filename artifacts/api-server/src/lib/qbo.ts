@@ -324,6 +324,29 @@ export interface QboJournalEntryResult {
   SyncToken: string;
 }
 
+/** QBO DocNumber is constrained to 21 chars; longer values are silently rejected. */
+const QBO_DOC_NUMBER_MAX_LENGTH = 21;
+
+/**
+ * Extract the most useful human-readable message from a QBO Fault response.
+ * QBO nests the actionable text under `Fault.Error[0].Detail`; falling back to
+ * Message (and finally the raw body) keeps logs informative when the shape
+ * doesn't match (rate-limit responses, gateway errors, etc.).
+ */
+function extractQboError(text: string): string {
+  try {
+    const json = JSON.parse(text) as {
+      Fault?: { Error?: Array<{ Detail?: string; Message?: string }> };
+    };
+    const e = json.Fault?.Error?.[0];
+    if (e?.Detail) return e.Detail;
+    if (e?.Message) return e.Message;
+  } catch {
+    // not JSON — fall through
+  }
+  return text;
+}
+
 /**
  * Push a journal entry to QBO. Each Line includes a JournalEntryLineDetail
  * with PostingType and AccountRef. QBO requires Dr = Cr to within rounding.
@@ -332,28 +355,41 @@ export async function pushJournalEntry(
   conn: QboConnection,
   je: QboJournalEntryInput,
 ): Promise<QboJournalEntryResult> {
+  // Defensive validation. The local journal builder already enforces balance
+  // and our schedule generator only emits dates in the supported range, but
+  // these checks fail fast (with a useful message) before round-tripping to
+  // QBO if some upstream caller forgets to do the work.
+  if (je.txnDate < "1900-01-01" || je.txnDate > "2100-12-31") {
+    throw new Error(`QBO rejects TxnDate outside 1900–2100: ${je.txnDate}`);
+  }
+  if (je.lines.length < 2) {
+    throw new Error(`QBO journal entry needs at least two lines, got ${je.lines.length}`);
+  }
   const Line = je.lines.map((l) => ({
     DetailType: "JournalEntryLineDetail",
-    Amount: Math.round(l.amount * 100) / 100,
+    Amount: Math.round(Math.abs(l.amount) * 100) / 100,
     Description: l.memo,
     JournalEntryLineDetail: {
       PostingType: l.posting,
       AccountRef: { value: l.accountRefId },
     },
   }));
-  const body = {
+  const body: Record<string, unknown> = {
     TxnDate: je.txnDate,
-    PrivateNote: je.privateMemo,
-    DocNumber: je.docNumber,
     Line,
   };
+  if (je.privateMemo) body.PrivateNote = je.privateMemo;
+  if (je.docNumber) body.DocNumber = je.docNumber.slice(0, QBO_DOC_NUMBER_MAX_LENGTH);
+
   const res = await qboFetch(conn, `/journalentry?minorversion=70`, {
     method: "POST",
     body: JSON.stringify(body),
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`QBO push JE failed (${res.status}): ${text}`);
+    // Surface QBO's `Fault.Error[0].Detail` as the headline message; keep the
+    // raw body in parentheses for debugging.
+    throw new Error(`QBO push JE failed (${res.status}): ${extractQboError(text)} — ${text}`);
   }
   const json = JSON.parse(text) as { JournalEntry?: QboJournalEntryResult };
   if (!json.JournalEntry) throw new Error(`QBO push JE returned no entry: ${text}`);

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, lte, gte, asc, sql, inArray } from "drizzle-orm";
+import { eq, ne, and, or, lte, gte, asc, sql, inArray, isNull } from "drizzle-orm";
 import {
   db,
   leasesTable,
@@ -451,6 +451,80 @@ router.put("/leases/:id", async (req, res): Promise<void> => {
       .returning();
 
     if (!updated) return null;
+
+    // Propagate GL account changes to journal-entry lines that haven't yet
+    // been pushed to QBO. The lines table stores `account_code` denormalized
+    // from the lease at post time, so simply editing the lease isn't enough
+    // — without this, an unsynced JE keeps the stale code and QBO rejects it
+    // ("Invalid Reference Id"). We only touch JEs whose qbo_id is NULL
+    // (never synced); anything already in QBO must go through unpost/repost
+    // to preserve the audit trail. We rewrite by old→new code mapping per
+    // role that actually changed; sequential per-role UPDATEs avoid CASE
+    // collisions when two roles map to the same old value.
+    const accountFieldMap: Array<{ field: keyof typeof updateData; oldVal: string | null }> = [
+      { field: "rouAssetAccount", oldVal: existing.rouAssetAccount },
+      { field: "leaseLiabilityAccount", oldVal: existing.leaseLiabilityAccount },
+      { field: "interestExpenseAccount", oldVal: existing.interestExpenseAccount },
+      { field: "amortizationExpenseAccount", oldVal: existing.amortizationExpenseAccount },
+      { field: "cashAccount", oldVal: existing.cashAccount },
+    ];
+    const accountChanges = accountFieldMap
+      .filter((m) => updateData[m.field] !== undefined && updateData[m.field] !== m.oldVal)
+      .map((m) => ({ oldVal: m.oldVal, newVal: updateData[m.field] as string | null }))
+      .filter((c) => c.oldVal && c.newVal);
+
+    if (accountChanges.length > 0) {
+      // IMPORTANT: every WHERE below is evaluated at write time against live
+      // state, not against a precomputed id list. If we snapshotted ids and
+      // then UPDATEd by id, a concurrent sync-all could (a) claim a row
+      // (`qbo_sync_status='syncing'`) between our SELECT and our UPDATE — and
+      // we'd clobber the claim, opening a duplicate-push race — or (b)
+      // complete the push (`qbo_id` populated) and we'd silently mutate a row
+      // that already exists in QBO. Filtering inside the UPDATE itself
+      // (`qbo_id IS NULL AND status != 'syncing'`) keeps the per-row decision
+      // atomic with the write.
+      const eligibleJeSubquery = tx
+        .select({ id: journalEntriesTable.id })
+        .from(journalEntriesTable)
+        .where(
+          and(
+            eq(journalEntriesTable.leaseId, updated.id),
+            isNull(journalEntriesTable.qboId),
+            or(
+              isNull(journalEntriesTable.qboSyncStatus),
+              ne(journalEntriesTable.qboSyncStatus, "syncing"),
+            ),
+          ),
+        );
+
+      for (const change of accountChanges) {
+        await tx
+          .update(journalEntryLinesTable)
+          .set({ accountCode: change.newVal as string })
+          .where(
+            and(
+              inArray(journalEntryLinesTable.journalEntryId, eligibleJeSubquery),
+              eq(journalEntryLinesTable.accountCode, change.oldVal as string),
+            ),
+          );
+      }
+      // Clear prior sync-failure error so the user can re-run "Sync all".
+      // Re-applies the same predicate so a row claimed mid-transaction is
+      // never reset out from under the worker that owns it.
+      await tx
+        .update(journalEntriesTable)
+        .set({ qboSyncStatus: null, qboSyncError: null })
+        .where(
+          and(
+            eq(journalEntriesTable.leaseId, updated.id),
+            isNull(journalEntriesTable.qboId),
+            or(
+              isNull(journalEntriesTable.qboSyncStatus),
+              ne(journalEntriesTable.qboSyncStatus, "syncing"),
+            ),
+          ),
+        );
+    }
 
     if (regenerate) {
       if (shortTermToggled) {

@@ -41,6 +41,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, round2 } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { AccountPicker } from "@/components/AccountPicker";
 
 type PaymentFrequency = "monthly" | "quarterly" | "annually";
 type LeaseClassification = "operating" | "finance";
@@ -102,57 +103,6 @@ type FormValues = z.infer<typeof formSchema>;
 interface AddLeaseModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}
-
-/**
- * GL account input. When QuickBooks is connected and the chart of accounts
- * has been pulled, render a Select sourced from the cached COA — the form
- * value becomes the QBO Account.Id (so the post-time JE push has a direct
- * AccountRef). Otherwise fall back to a free-form text input so the app is
- * still usable without QBO.
- */
-function AccountField(props: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder: string;
-  testId: string;
-  accounts: Array<{ qboId: string; acctNum?: string | null; name: string; accountType?: string | null; active: boolean }>;
-}) {
-  if (props.accounts.length === 0) {
-    return (
-      <Input
-        placeholder={props.placeholder}
-        data-testid={props.testId}
-        value={props.value}
-        onChange={(e) => props.onChange(e.target.value)}
-      />
-    );
-  }
-  // The stored value might be a legacy account code (e.g. "1800") that doesn't
-  // match a QBO Id — show it as a sentinel item so the user knows to re-pick.
-  const known = props.accounts.some((a) => a.qboId === props.value);
-  return (
-    <Select onValueChange={props.onChange} value={props.value || ""}>
-      <SelectTrigger data-testid={props.testId}>
-        <SelectValue placeholder="Select QBO account…" />
-      </SelectTrigger>
-      <SelectContent className="max-h-72">
-        {!known && props.value && (
-          <SelectItem value={props.value} disabled>
-            ⚠ Legacy: {props.value}
-          </SelectItem>
-        )}
-        {props.accounts
-          .filter((a) => a.active)
-          .map((a) => (
-            <SelectItem key={a.qboId} value={a.qboId}>
-              {a.acctNum ? `${a.acctNum} — ${a.name}` : a.name}
-              {a.accountType ? ` (${a.accountType})` : ""}
-            </SelectItem>
-          ))}
-      </SelectContent>
-    </Select>
-  );
 }
 
 export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
@@ -726,7 +676,7 @@ export function AddLeaseModal({ open, onOpenChange }: AddLeaseModalProps) {
                               <FormItem>
                                 <FormLabel>{cfg.label}</FormLabel>
                                 <FormControl>
-                                  <AccountField
+                                  <AccountPicker
                                     value={field.value ?? ""}
                                     onChange={field.onChange}
                                     placeholder={cfg.placeholder}

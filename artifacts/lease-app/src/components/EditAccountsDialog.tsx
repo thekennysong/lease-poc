@@ -19,9 +19,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AccountPicker } from "@/components/AccountPicker";
 import { useToast } from "@/hooks/use-toast";
 
 type AccountField =
@@ -38,47 +37,6 @@ const FIELDS: Array<{ key: AccountField; label: string }> = [
   { key: "amortizationExpenseAccount", label: "Amortization / Lease Expense Account" },
   { key: "cashAccount", label: "Cash / Bank Account" },
 ];
-
-function AccountPicker(props: {
-  value: string;
-  onChange: (v: string) => void;
-  accounts: Array<{ qboId: string; acctNum?: string | null; name: string; accountType?: string | null; active: boolean }>;
-  testId: string;
-}) {
-  if (props.accounts.length === 0) {
-    return (
-      <Input
-        value={props.value}
-        onChange={(e) => props.onChange(e.target.value)}
-        placeholder="Account code"
-        data-testid={props.testId}
-      />
-    );
-  }
-  const known = props.accounts.some((a) => a.qboId === props.value);
-  return (
-    <Select onValueChange={props.onChange} value={props.value || ""}>
-      <SelectTrigger data-testid={props.testId}>
-        <SelectValue placeholder="Select QBO account…" />
-      </SelectTrigger>
-      <SelectContent className="max-h-72">
-        {!known && props.value && (
-          <SelectItem value={props.value} disabled>
-            ⚠ Legacy: {props.value}
-          </SelectItem>
-        )}
-        {props.accounts
-          .filter((a) => a.active)
-          .map((a) => (
-            <SelectItem key={a.qboId} value={a.qboId}>
-              {a.acctNum ? `${a.acctNum} — ${a.name}` : a.name}
-              {a.accountType ? ` (${a.accountType})` : ""}
-            </SelectItem>
-          ))}
-      </SelectContent>
-    </Select>
-  );
-}
 
 export function EditAccountsDialog({
   lease,

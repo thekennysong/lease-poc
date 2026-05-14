@@ -1,0 +1,401 @@
+# QBO Journal Entry Posting Integration Guide
+
+This guide assumes OAuth is already handled and your backend can obtain a valid QuickBooks Online access token plus the company `realmId` / `companyId`. The hard part below is the journal entry posting shape, validation, mapping, and error handling.
+
+## Goal
+
+Post a Journal Entry to QuickBooks Online using a clean internal app payload, then transform it server-side into QBO's required `JournalEntry` API payload.
+
+Use this QBO endpoint from your backend:
+
+```http
+POST https://quickbooks.api.intuit.com/v3/company/{realmId}/journalentry
+Authorization: Bearer {accessToken}
+Content-Type: application/json
+Accept: application/json
+```
+
+`realmId` is the QBO company id.
+
+## Internal Payload Shape
+
+Use this shape in your app. It is easier to reason about than raw QBO JSON.
+
+```ts
+type JournalEntryLineInput = {
+  type: "Debit" | "Credit";
+  amount: number;
+  accountId: string;
+  description?: string;
+  locationId?: string;
+  classId?: string;
+  entityId?: string;
+  entityType?: "Vendor" | "Customer" | "Employee";
+};
+
+type JournalEntryInput = {
+  txnDate: string;        // YYYY-MM-DD
+  itemNumber?: string;    // QBO DocNumber, max 21 chars
+  privateNote?: string;
+  lineItems: JournalEntryLineInput[];
+};
+```
+
+Example internal request:
+
+```json
+{
+  "txnDate": "2026-05-31",
+  "itemNumber": "PAYROLL-2026-05",
+  "privateNote": "May payroll accrual",
+  "lineItems": [
+    {
+      "type": "Debit",
+      "amount": 12000,
+      "accountId": "81",
+      "description": "Payroll expense"
+    },
+    {
+      "type": "Credit",
+      "amount": 12000,
+      "accountId": "205",
+      "description": "Accrued payroll"
+    }
+  ]
+}
+```
+
+## Validation Before Posting
+
+Validate these before sending anything to QBO:
+
+1. `txnDate` is required and must be `YYYY-MM-DD`.
+2. `txnDate` should be between `1900-01-01` and `2100-12-31`.
+3. There must be at least two line items.
+4. Every line must have an `accountId`.
+5. Every line must have a numeric non-zero `amount`.
+6. Total debits must equal total credits after rounding to two decimals.
+7. If a line uses an A/P account, QBO generally expects a `Vendor` entity.
+8. If a line uses an A/R account, QBO generally expects a `Customer` entity.
+9. `itemNumber` must be truncated to 21 characters before posting.
+
+Recommended balance check:
+
+```ts
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+function validateBalanced(lines: JournalEntryLineInput[]) {
+  const debits = round2(
+    lines
+      .filter((l) => getPostingType(l) === "Debit")
+      .reduce((sum, l) => sum + Math.abs(l.amount), 0)
+  );
+
+  const credits = round2(
+    lines
+      .filter((l) => getPostingType(l) === "Credit")
+      .reduce((sum, l) => sum + Math.abs(l.amount), 0)
+  );
+
+  if (debits !== credits) {
+    throw new Error(`Journal entry is not balanced. Debits: ${debits}, Credits: ${credits}`);
+  }
+}
+```
+
+## Posting Type Logic
+
+The integration supports negative amounts by flipping the line type.
+
+```ts
+function getPostingType(line: JournalEntryLineInput): "Debit" | "Credit" {
+  if (line.amount >= 0) return line.type;
+  return line.type === "Credit" ? "Debit" : "Credit";
+}
+```
+
+Always post `Amount` to QBO as `Math.abs(line.amount)`.
+
+## QBO Payload Mapping
+
+Internal field mapping:
+
+| Internal field | QBO field |
+|---|---|
+| `txnDate` | `TxnDate` |
+| `itemNumber` | `DocNumber` |
+| `privateNote` | `PrivateNote` |
+| `lineItems[].description` | `Line[].Description` |
+| `lineItems[].amount` | `Line[].Amount` as absolute value |
+| `lineItems[].type` | `Line[].JournalEntryLineDetail.PostingType` |
+| `lineItems[].accountId` | `Line[].JournalEntryLineDetail.AccountRef.value` |
+| `lineItems[].locationId` | `Line[].JournalEntryLineDetail.DepartmentRef.value` |
+| `lineItems[].classId` | `Line[].JournalEntryLineDetail.ClassRef.value` |
+| `lineItems[].entityId` + `entityType` | `Line[].JournalEntryLineDetail.Entity` |
+
+Important QBO naming:
+
+- QBO calls locations/departments `DepartmentRef`.
+- QBO calls classes `ClassRef`.
+- QBO entity types must be title case: `Vendor`, `Customer`, or `Employee`.
+- Each line must have `DetailType: "JournalEntryLineDetail"`.
+
+## Transformer
+
+Use this function server-side to convert your app payload into the raw QBO payload.
+
+```ts
+const QBO_DOC_NUMBER_MAX_LENGTH = 21;
+
+function truncateDocNumber(value?: string | null): string | undefined {
+  return value ? value.slice(0, QBO_DOC_NUMBER_MAX_LENGTH) : undefined;
+}
+
+function getPostingType(line: JournalEntryLineInput): "Debit" | "Credit" {
+  if (line.amount >= 0) return line.type;
+  return line.type === "Credit" ? "Debit" : "Credit";
+}
+
+function buildQboJournalEntryPayload(entry: JournalEntryInput) {
+  if (entry.txnDate < "1900-01-01" || entry.txnDate > "2100-12-31") {
+    throw new Error(
+      `Journal entry date ${entry.txnDate} is outside the supported QBO range.`
+    );
+  }
+
+  const payload: any = {
+    TxnDate: entry.txnDate,
+    Line: entry.lineItems.map((line) => {
+      const detail: any = {
+        PostingType: getPostingType(line),
+        AccountRef: {
+          value: line.accountId
+        }
+      };
+
+      if (line.locationId) {
+        detail.DepartmentRef = { value: line.locationId };
+      }
+
+      if (line.classId) {
+        detail.ClassRef = { value: line.classId };
+      }
+
+      if (line.entityId && line.entityType) {
+        detail.Entity = {
+          Type: line.entityType,
+          EntityRef: { value: line.entityId }
+        };
+      }
+
+      return {
+        DetailType: "JournalEntryLineDetail",
+        Description: line.description ?? "",
+        Amount: Math.abs(line.amount),
+        JournalEntryLineDetail: detail
+      };
+    })
+  };
+
+  const docNumber = truncateDocNumber(entry.itemNumber);
+  if (docNumber) payload.DocNumber = docNumber;
+  if (entry.privateNote) payload.PrivateNote = entry.privateNote;
+
+  return payload;
+}
+```
+
+## Example QBO Payload
+
+This is what the transformer should send to QBO:
+
+```json
+{
+  "TxnDate": "2026-05-31",
+  "DocNumber": "PAYROLL-2026-05",
+  "PrivateNote": "May payroll accrual",
+  "Line": [
+    {
+      "DetailType": "JournalEntryLineDetail",
+      "Description": "Payroll expense",
+      "Amount": 12000,
+      "JournalEntryLineDetail": {
+        "PostingType": "Debit",
+        "AccountRef": {
+          "value": "81"
+        }
+      }
+    },
+    {
+      "DetailType": "JournalEntryLineDetail",
+      "Description": "Accrued payroll",
+      "Amount": 12000,
+      "JournalEntryLineDetail": {
+        "PostingType": "Credit",
+        "AccountRef": {
+          "value": "205"
+        }
+      }
+    }
+  ]
+}
+```
+
+## Backend Route Pattern
+
+Recommended Replit route:
+
+```ts
+app.post("/api/qbo/journal-entry", async (req, res) => {
+  try {
+    const { realmId, journalEntry } = req.body;
+
+    // OAuth is assumed already handled.
+    const accessToken = await getAccessTokenForRealm(realmId);
+
+    validateJournalEntry(journalEntry);
+    const qboPayload = buildQboJournalEntryPayload(journalEntry);
+
+    const response = await fetch(
+      `https://quickbooks.api.intuit.com/v3/company/${realmId}/journalentry`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        body: JSON.stringify(qboPayload)
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: true,
+        message: getQboFaultMessage(data) ?? "Failed to post journal entry",
+        qbo: data
+      });
+    }
+
+    return res.json({
+      journalEntry: data.JournalEntry,
+      id: data.JournalEntry?.Id,
+      syncToken: data.JournalEntry?.SyncToken
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      error: true,
+      message: error.message ?? "Unexpected journal entry posting error"
+    });
+  }
+});
+```
+
+Fault helper:
+
+```ts
+function getQboFaultMessage(content: any): string | undefined {
+  const error = content?.Fault?.Error;
+  if (Array.isArray(error) && error.length > 0) {
+    return error[0]?.Detail || error[0]?.Message;
+  }
+}
+```
+
+## Updating a Journal Entry
+
+To update an existing QBO JE, include `Id` and `SyncToken` in the QBO payload and post to the same endpoint:
+
+```ts
+const updatePayload = {
+  ...buildQboJournalEntryPayload(entry),
+  Id: existingQboJournalEntryId,
+  SyncToken: existingSyncToken
+};
+```
+
+QBO uses optimistic locking. If `SyncToken` is stale, the update will fail and you need to refetch the JE.
+
+## Batch Create, Update, Delete
+
+QBO supports batch operations at:
+
+```http
+POST https://quickbooks.api.intuit.com/v3/company/{realmId}/batch
+```
+
+Payload shape:
+
+```json
+{
+  "BatchItemRequest": [
+    {
+      "bId": "entry-1",
+      "operation": "create",
+      "JournalEntry": {}
+    }
+  ]
+}
+```
+
+Limit batch payloads to 30 items.
+
+## Returned Success Shape
+
+QBO returns:
+
+```json
+{
+  "JournalEntry": {
+    "Id": "123",
+    "SyncToken": "0",
+    "DocNumber": "PAYROLL-2026-05",
+    "TxnDate": "2026-05-31",
+    "Line": []
+  },
+  "time": "..."
+}
+```
+
+Store at minimum:
+
+- `JournalEntry.Id`
+- `JournalEntry.SyncToken`
+- `JournalEntry.DocNumber`
+- `JournalEntry.TxnDate`
+
+Use the ID to deep-link to QBO:
+
+```ts
+function getJournalEntryUrl(realmId: string, id: string) {
+  return `https://app.qbo.intuit.com/app/switchCompany?companyId=${realmId}&navigationURL=journal?txnId=${id}`;
+}
+```
+
+## Common QBO Gotchas
+
+1. Do not expose QBO access tokens to the frontend.
+2. `realmId` is the company id used in the URL.
+3. QBO account ids are not account numbers. Use QBO `Account.Id`.
+4. If locations are enabled, QBO wants `DepartmentRef`, not `LocationRef`.
+5. A/P journal lines often need a Vendor entity.
+6. A/R journal lines often need a Customer entity.
+7. QBO `DocNumber` max length is 21 characters.
+8. Keep `SyncToken` if you want to update or delete later.
+9. Treat QBO `Fault.Error[0].Detail` as the best user-facing error when present.
+10. Add retry/backoff or queueing if you post many entries, because QBO rate limits.
+
+## Minimal Implementation Checklist
+
+- [ ] Backend route receives internal `JournalEntryInput`.
+- [ ] Backend gets access token from existing OAuth storage.
+- [ ] Validate date, lines, accounts, and debit/credit balance.
+- [ ] Transform to raw QBO payload.
+- [ ] POST to `/v3/company/{realmId}/journalentry`.
+- [ ] Parse `data.JournalEntry`.
+- [ ] Store `Id` and `SyncToken`.
+- [ ] Return QBO deep link to the frontend.
+- [ ] Surface QBO fault details when posting fails.
+

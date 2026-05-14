@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, ArrowLeft, Info, Undo2, AlertTriangle, CheckCircle2, RefreshCw, CloudOff, XCircle } from "lucide-react";
+import { ChevronRight, ArrowLeft, Info, Undo2, AlertTriangle, CheckCircle2, RefreshCw, CloudOff, XCircle, Pencil } from "lucide-react";
+import { EditAccountsDialog } from "@/components/EditAccountsDialog";
 import {
   useGetLease,
   getGetLeaseQueryKey,
@@ -56,6 +57,7 @@ export default function LeaseDetailPage() {
   });
 
   const [postModalOpen, setPostModalOpen] = useState(false);
+  const [editAccountsOpen, setEditAccountsOpen] = useState(false);
   const [throughPeriod, setThroughPeriod] = useState<number | "">("");
   // Captured from a 400 { missingAccounts: [...] } response — surfaces inline
   // on the lease detail page rather than only as a transient toast.
@@ -211,6 +213,16 @@ export default function LeaseDetailPage() {
               </Badge>
             )}
           </div>
+          <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setEditAccountsOpen(true)}
+            data-testid="button-edit-accounts"
+          >
+            <Pencil className="w-3.5 h-3.5 mr-1.5" />
+            Edit GL Accounts
+          </Button>
           {!lease.isShortTerm && (() => {
             // Mirror the server's validateAccountsForPost so we can disable the
             // button and explain why before the user even clicks it. Source of
@@ -261,6 +273,7 @@ export default function LeaseDetailPage() {
               </TooltipProvider>
             );
           })()}
+          </div>
         </div>
 
         {postMissingAccounts && postMissingAccounts.length > 0 && (
@@ -625,6 +638,12 @@ export default function LeaseDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <EditAccountsDialog
+        lease={lease}
+        open={editAccountsOpen}
+        onOpenChange={setEditAccountsOpen}
+      />
     </Layout>
   );
 }

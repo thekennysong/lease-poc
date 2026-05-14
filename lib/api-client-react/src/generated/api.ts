@@ -31,6 +31,7 @@ import type {
   QboAccountsResponse,
   QboStatus,
   ScheduleEntry,
+  SyncAllQboJournalEntries200,
   SyncQboJournalEntry200,
 } from "./api.schemas";
 
@@ -1211,6 +1212,90 @@ export const useRefreshQboAccounts = <
   TContext
 > => {
   return useMutation(getRefreshQboAccountsMutationOptions(options));
+};
+
+/**
+ * @summary Push every locally-posted JE not yet in QuickBooks (backfill)
+ */
+export const getSyncAllQboJournalEntriesUrl = () => {
+  return `/api/qbo/journal-entries/sync-all`;
+};
+
+export const syncAllQboJournalEntries = async (
+  options?: RequestInit,
+): Promise<SyncAllQboJournalEntries200> => {
+  return customFetch<SyncAllQboJournalEntries200>(
+    getSyncAllQboJournalEntriesUrl(),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getSyncAllQboJournalEntriesMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof syncAllQboJournalEntries>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof syncAllQboJournalEntries>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["syncAllQboJournalEntries"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof syncAllQboJournalEntries>>,
+    void
+  > = () => {
+    return syncAllQboJournalEntries(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SyncAllQboJournalEntriesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof syncAllQboJournalEntries>>
+>;
+
+export type SyncAllQboJournalEntriesMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Push every locally-posted JE not yet in QuickBooks (backfill)
+ */
+export const useSyncAllQboJournalEntries = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof syncAllQboJournalEntries>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof syncAllQboJournalEntries>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getSyncAllQboJournalEntriesMutationOptions(options));
 };
 
 /**

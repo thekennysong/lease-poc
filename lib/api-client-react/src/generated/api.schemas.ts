@@ -452,6 +452,19 @@ export type DisconnectQbo200 = {
   disconnected: boolean;
 };
 
+export type SyncAllQboJournalEntries200ErrorsItem = {
+  id: number;
+  error: string;
+};
+
+export type SyncAllQboJournalEntries200 = {
+  /** Number of unsynced posted JEs found */
+  candidates: number;
+  synced: number;
+  failed: number;
+  errors?: SyncAllQboJournalEntries200ErrorsItem[];
+};
+
 /**
  * @nullable
  */

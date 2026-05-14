@@ -342,6 +342,44 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /qbo/journal-entries/sync-all:
+    post:
+      operationId: syncAllQboJournalEntries
+      tags: [qbo]
+      summary: Push every locally-posted JE not yet in QuickBooks (backfill)
+      responses:
+        "200":
+          description: Bulk sync result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [candidates, synced, failed]
+                properties:
+                  candidates:
+                    type: integer
+                    description: Number of unsynced posted JEs found
+                  synced:
+                    type: integer
+                  failed:
+                    type: integer
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, error]
+                      properties:
+                        id:
+                          type: integer
+                        error:
+                          type: string
+        "400":
+          description: QuickBooks not connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /qbo/journal-entries/{id}/sync:
     post:
       operationId: syncQboJournalEntry

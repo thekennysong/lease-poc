@@ -41,5 +41,7 @@ export * from "./qboStatus";
 export * from "./qboStatusEnvironment";
 export * from "./scheduleEntry";
 export * from "./scheduleEntryStatus";
+export * from "./syncAllQboJournalEntries200";
+export * from "./syncAllQboJournalEntries200ErrorsItem";
 export * from "./syncQboJournalEntry200";
 export * from "./syncQboJournalEntry200QboSyncStatus";

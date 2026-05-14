@@ -478,6 +478,23 @@ export const RefreshQboAccountsResponse = zod.object({
 });
 
 /**
+ * @summary Push every locally-posted JE not yet in QuickBooks (backfill)
+ */
+export const SyncAllQboJournalEntriesResponse = zod.object({
+  candidates: zod.number().describe("Number of unsynced posted JEs found"),
+  synced: zod.number(),
+  failed: zod.number(),
+  errors: zod
+    .array(
+      zod.object({
+        id: zod.number(),
+        error: zod.string(),
+      }),
+    )
+    .optional(),
+});
+
+/**
  * @summary Manually retry pushing a posted JE to QuickBooks
  */
 export const SyncQboJournalEntryParams = zod.object({

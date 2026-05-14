@@ -8,6 +8,7 @@
  *   GET  /qbo/accounts         — cached chart of accounts (auto-refresh if stale)
  *   POST /qbo/accounts/refresh — force re-pull COA from QBO
  *   POST /qbo/journal-entries/:id/sync — manual retry of a failed JE push
+ *   POST /qbo/journal-entries/sync-all — backfill: push every posted-but-unsynced JE
  */
 
 import { Router, type IRouter } from "express";
@@ -338,6 +339,116 @@ router.post("/qbo/journal-entries/:id/sync", async (req, res): Promise<void> => 
     req.log.error({ err, journalEntryId: id }, "QBO JE sync retry failed");
     res.status(502).json({ error: message });
   }
+});
+
+// ───────── Bulk backfill ─────────
+
+/**
+ * Push every locally-posted JE that doesn't yet have a `qboId` to QuickBooks.
+ *
+ * Use case: the user posted a bunch of months locally before connecting QBO
+ * (so their JEs are `skipped`), then connects QBO and wants the historical
+ * close mirrored. Also picks up anything currently `failed` for one-click
+ * recovery, and `pending`/null for safety.
+ *
+ * Per-JE result is returned so the UI can summarize. Failures on individual
+ * entries don't abort the rest; they're recorded on the row as `failed` and
+ * counted in `failed`.
+ */
+router.post("/qbo/journal-entries/sync-all", async (req, res): Promise<void> => {
+  const conn = await ensureValidConnection().catch((err) => {
+    res.status(400).json({ error: (err as Error).message });
+    return null;
+  });
+  if (!conn) return;
+
+  // Candidates: any JE in `posted` status without a qboId. We deliberately
+  // exclude `reversed` rows (they were superseded by an offsetting JE) and
+  // anything currently `syncing` (another worker has the claim).
+  const candidates = await db
+    .select()
+    .from(journalEntriesTable)
+    .where(
+      and(
+        eq(journalEntriesTable.status, "posted"),
+        isNull(journalEntriesTable.qboId),
+        ne(journalEntriesTable.qboSyncStatus, "syncing"),
+      ),
+    )
+    .orderBy(asc(journalEntriesTable.postedAt));
+
+  let synced = 0;
+  let failed = 0;
+  const errors: Array<{ id: number; error: string }> = [];
+
+  for (const je of candidates) {
+    // Atomic claim per row so a concurrent retry can't double-push.
+    const [claimed] = await db
+      .update(journalEntriesTable)
+      .set({ qboSyncStatus: "syncing", qboSyncError: null })
+      .where(
+        and(
+          eq(journalEntriesTable.id, je.id),
+          isNull(journalEntriesTable.qboId),
+          ne(journalEntriesTable.qboSyncStatus, "syncing"),
+        ),
+      )
+      .returning();
+    if (!claimed) continue;
+
+    const lines = await db
+      .select()
+      .from(journalEntryLinesTable)
+      .where(eq(journalEntryLinesTable.journalEntryId, je.id));
+    const [lease] = await db
+      .select()
+      .from(leasesTable)
+      .where(eq(leasesTable.id, je.leaseId));
+
+    try {
+      const result = await pushJournalEntry(conn, {
+        // We don't have the schedule entry's payment date in scope (would
+        // require an extra join per JE). Period-first-of-month is accurate
+        // enough for backfill — the user can correct in QBO if needed.
+        txnDate: `${je.period}-01`,
+        privateMemo: je.memo ?? `Lease ${lease?.name ?? je.leaseId} ${je.period}`,
+        docNumber: `LSE-${je.leaseId}-${je.period}`,
+        lines: lines.map((l) => ({
+          accountRefId: l.accountCode,
+          amount: parseFloat(l.debit) > 0 ? parseFloat(l.debit) : parseFloat(l.credit),
+          posting: parseFloat(l.debit) > 0 ? "Debit" : "Credit",
+          memo: l.memo ?? undefined,
+        })),
+      });
+      await db
+        .update(journalEntriesTable)
+        .set({
+          qboId: result.Id,
+          qboSyncToken: result.SyncToken,
+          qboSyncStatus: "synced",
+          qboSyncError: null,
+          qboSyncedAt: new Date(),
+        })
+        .where(eq(journalEntriesTable.id, je.id));
+      synced++;
+    } catch (err) {
+      const message = (err as Error).message;
+      req.log.error({ err, journalEntryId: je.id }, "QBO bulk sync JE push failed");
+      await db
+        .update(journalEntriesTable)
+        .set({ qboSyncStatus: "failed", qboSyncError: message })
+        .where(eq(journalEntriesTable.id, je.id));
+      failed++;
+      errors.push({ id: je.id, error: message });
+    }
+  }
+
+  res.json({
+    candidates: candidates.length,
+    synced,
+    failed,
+    errors: errors.slice(0, 20),
+  });
 });
 
 export default router;

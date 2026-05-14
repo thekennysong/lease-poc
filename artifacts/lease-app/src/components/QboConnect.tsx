@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Link2, Link2Off, RefreshCw, CheckCircle2, AlertCircle } from "lucide-react";
+import { Link2, Link2Off, RefreshCw, CheckCircle2, AlertCircle, UploadCloud } from "lucide-react";
 import {
   useGetQboStatus,
   getGetQboStatusQueryKey,
   disconnectQbo,
   refreshQboAccounts,
   getGetQboAccountsQueryKey,
+  syncAllQboJournalEntries,
 } from "@workspace/api-client-react";
 
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,7 @@ export function QboConnect() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const popupRef = useRef<Window | null>(null);
-  const [busy, setBusy] = useState<"connect" | "disconnect" | "refresh" | null>(null);
+  const [busy, setBusy] = useState<"connect" | "disconnect" | "refresh" | "syncAll" | null>(null);
 
   const { data: status, refetch } = useGetQboStatus({
     query: { queryKey: getGetQboStatusQueryKey(), refetchOnWindowFocus: true },
@@ -77,6 +78,32 @@ export function QboConnect() {
       toast({ title: "Disconnected from QuickBooks" });
     } catch (err) {
       toast({ title: "Disconnect failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleSyncAll() {
+    setBusy("syncAll");
+    try {
+      const res = await syncAllQboJournalEntries();
+      // Invalidate every cached JE list — a JE could belong to any lease.
+      qc.invalidateQueries({ predicate: (q) => Array.isArray(q.queryKey) && q.queryKey.some((k) => typeof k === "string" && k.includes("journal-entries")) });
+      if (res.candidates === 0) {
+        toast({ title: "Nothing to sync", description: "All posted entries are already in QuickBooks." });
+      } else if (res.failed === 0) {
+        toast({ title: "Synced to QuickBooks", description: `${res.synced} of ${res.candidates} journal entries pushed.` });
+      } else {
+        toast({
+          title: `Synced ${res.synced} of ${res.candidates}`,
+          description: `${res.failed} failed — see the per-entry status on each lease.`,
+          variant: "destructive",
+        });
+      }
+    } catch (err) {
+      const message = (err as { data?: { error?: string }; message?: string }).data?.error
+        ?? (err as Error).message;
+      toast({ title: "Sync failed", description: message, variant: "destructive" });
     } finally {
       setBusy(null);
     }
@@ -152,6 +179,17 @@ export function QboConnect() {
             )}
           </div>
           <div className="flex flex-col gap-2 pt-1">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleSyncAll}
+              disabled={busy !== null}
+              data-testid="button-qbo-sync-all"
+              className="gap-1.5"
+            >
+              <UploadCloud className={`h-3.5 w-3.5 ${busy === "syncAll" ? "animate-pulse" : ""}`} />
+              {busy === "syncAll" ? "Syncing…" : "Sync all posted JEs"}
+            </Button>
             <Button
               size="sm"
               variant="outline"
